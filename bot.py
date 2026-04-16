@@ -4,8 +4,8 @@ from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import os
 
-TOKEN = os.environ.get("BOT_TOKEN")
-GROQ_KEY = os.environ.get("GROQ_KEY")
+TOKEN = os.environ.get("8737782674:AAGFDh3KdhFaVu3lp4QFm-2_cR-_Ne7hICY")
+GROQ_KEY = os.environ.get("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")
 
 user_names = {}
 
