@@ -1,44 +1,66 @@
+import os
 import aiohttp
 import asyncio
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-import os
 
-TOKEN = os.environ.get("8737782674:AAGFDh3KdhFaVu3lp4QFm-2_cR-_Ne7hICY")
-GROQ_KEY = os.environ.get("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")
+# ========== БЕРЁМ КЛЮЧИ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ (RAILWAY/RENDER) ==========
+TOKEN = os.getenv("8737782674:AAGFDh3KdhFaVu3lp4QFm-2_cR-_Ne7hICY")
+GROQ_KEY = os.getenv("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")
+
+# Проверка, что ключи есть
+if not TOKEN:
+    raise ValueError("❌ BOT_TOKEN не найден! Добавь переменную в Railway")
+if not GROQ_KEY:
+    raise ValueError("❌ GROQ_KEY не найден! Добавь переменную в Railway")
 
 user_names = {}
 
 def get_keyboard():
     buttons = [
-        [KeyboardButton("📝 Текст"), KeyboardButton("🎨 Картинка")],
-        [KeyboardButton("📖 Стих"), KeyboardButton("❓ Помощь")]
+        [KeyboardButton("🎨 Картинка"), KeyboardButton("❓ Помощь")]
     ]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
 async def ask_groq(prompt):
     url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"}
-    payload = {"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": prompt}], "max_tokens": 800}
+    headers = {
+        "Authorization": f"Bearer {GROQ_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 800,
+        "temperature": 0.8
+    }
     try:
-        async with aiohttp.ClientSession() as s:
-            async with s.post(url, headers=headers, json=payload, timeout=60) as r:
-                if r.status == 200:
-                    data = await r.json()
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=headers, json=payload, timeout=60) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
                     return data['choices'][0]['message']['content']
-                return f"Ошибка API: {r.status}"
+                return f"❌ Ошибка API: {resp.status}"
     except Exception as e:
-        return f"Ошибка: {str(e)}"
+        return f"❌ Ошибка: {str(e)}"
 
 async def generate_image(prompt):
-    return f"https://image.pollinations.ai/prompt/{prompt.replace(' ', '%20')}?width=1024&height=1024"
+    url = f"https://image.pollinations.ai/prompt/{prompt.replace(' ', '%20')}?width=1024&height=1024&nologo=true"
+    return url
 
 async def start(update, context):
     user_id = update.effective_user.id
     if user_id in user_names:
-        await update.message.reply_text(f"С возвращением, {user_names[user_id]}!", reply_markup=get_keyboard())
+        name = user_names[user_id]
+        await update.message.reply_text(
+            f"✨ С возвращением, {name}!",
+            reply_markup=get_keyboard()
+        )
     else:
-        await update.message.reply_text("Привет! Как тебя зовут?")
+        await update.message.reply_text(
+            "🤍 Привет! Я **марGO**.\n\nКак тебя зовут?",
+            parse_mode="Markdown"
+        )
         context.user_data['waiting_for_name'] = True
 
 async def handle_message(update, context):
@@ -49,51 +71,45 @@ async def handle_message(update, context):
     if ud.get('waiting_for_name'):
         user_names[user_id] = text.strip()
         ud['waiting_for_name'] = False
-        await update.message.reply_text("Приятно познакомиться!", reply_markup=get_keyboard())
-        return
-
-    if ud.get('waiting_for_text'):
-        await update.message.reply_text("Пишу...")
-        ans = await ask_groq(f"Напиши текст на тему: {text}")
-        await update.message.reply_text(ans)
-        ud['waiting_for_text'] = False
+        await update.message.reply_text(
+            f"🤍 Приятно познакомиться, {user_names[user_id]}!\n\nПросто пиши вопросы.",
+            reply_markup=get_keyboard()
+        )
         return
 
     if ud.get('waiting_for_image'):
-        await update.message.reply_text("Рисую...")
-        img = await generate_image(text)
-        await update.message.reply_photo(img, caption=text)
+        await update.message.reply_text("🎨 Рисую картинку...")
+        img_url = await generate_image(text)
+        await update.message.reply_photo(img_url, caption=f"🎨 {text}")
         ud['waiting_for_image'] = False
         return
 
-    if ud.get('waiting_for_poem'):
-        await update.message.reply_text("Сочиняю стих...")
-        ans = await ask_groq(f"Напиши стих на тему: {text}. 4-8 строк, с рифмой.")
-        await update.message.reply_text(ans)
-        ud['waiting_for_poem'] = False
+    if text == "🎨 Картинка":
+        await update.message.reply_text("🖌️ Опиши, что нарисовать")
+        ud['waiting_for_image'] = True
         return
 
-    if text == "📝 Текст":
-        await update.message.reply_text("Напиши тему")
-        ud['waiting_for_text'] = True
-    elif text == "🎨 Картинка":
-        await update.message.reply_text("Опиши что нарисовать")
-        ud['waiting_for_image'] = True
-    elif text == "📖 Стих":
-        await update.message.reply_text("Напиши тему стиха")
-        ud['waiting_for_poem'] = True
-    elif text == "❓ Помощь":
-        await update.message.reply_text("Кнопки: Текст, Картинка, Стих")
-    else:
-        await update.message.reply_text("Думаю...")
-        ans = await ask_groq(text)
-        await update.message.reply_text(ans)
+    if text == "❓ Помощь":
+        await update.message.reply_text(
+            "📋 **Что умеет марGO:**\n\n"
+            "• 💬 Общение — просто напиши вопрос\n"
+            "• 🎨 Картинка — нажми кнопку и опиши\n\n"
+            "Примеры: «Напиши стих», «Расскажи шутку»",
+            parse_mode="Markdown"
+        )
+        return
+
+    await update.message.reply_text("💭 Думаю...")
+    answer = await ask_groq(
+        f"Ты — марGO, дружелюбный бот. Пользователь написал: {text}. Ответь естественно."
+    )
+    await update.message.reply_text(answer)
 
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("✅ Бот запущен и работает!")
+    print("✅ марGO запущена на Railway!")
     app.run_polling()
 
 if __name__ == "__main__":
