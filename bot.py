@@ -1,11 +1,11 @@
 import os
 import asyncio
-import threading
 import aiohttp
 import random
-from flask import Flask
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from flask import Flask
+import threading
 
 TOKEN = os.environ.get("BOT_TOKEN")
 GROQ_KEY = os.environ.get("GROQ_KEY")
@@ -16,14 +16,14 @@ if not GROQ_KEY:
     raise ValueError("GROQ_KEY не задан")
 
 # Веб-сервер для Render
-app = Flask(__name__)
+flask_app = Flask(__name__)
 
-@app.route('/')
+@flask_app.route('/')
 def health():
-    return "Бот работает!"
+    return "Бот марGO работает!"
 
-def run_web():
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
+def run_flask():
+    flask_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
 
 # ========== БОТ ==========
 user_names = {}
@@ -40,10 +40,10 @@ def get_keyboard():
 
 async def ask_groq(prompt, style="normal"):
     style_prompts = {
-        "official": "Ты — официальный ассистент. Отвечай серьёзно, формально, деловым стилем.",
-        "child": "Ты — детский помощник. Объясняй простым языком для ребёнка 8-10 лет.",
-        "short": "Отвечай максимально коротко. 1-2 предложения. Только суть.",
-        "normal": "Ты — марGO, дружелюбный молодой помощник. Отвечай естественно, с душой."
+        "official": "Ты — официальный ассистент. Отвечай серьёзно, формально.",
+        "child": "Ты — детский помощник. Объясняй простым языком для ребёнка.",
+        "short": "Отвечай максимально коротко. 1-2 предложения.",
+        "normal": "Ты — марGO, дружелюбный помощник. Отвечай естественно, с душой."
     }
     
     full_prompt = f"{style_prompts[style]} Пользователь спрашивает: {prompt}"
@@ -53,7 +53,7 @@ async def ask_groq(prompt, style="normal"):
     payload = {
         "model": "llama-3.3-70b-versatile",
         "messages": [{"role": "user", "content": full_prompt}],
-        "max_tokens": 1000,
+        "max_tokens": 800,
         "temperature": 0.8
     }
     try:
@@ -67,22 +67,22 @@ async def ask_groq(prompt, style="normal"):
         return f"❌ Ошибка: {str(e)}"
 
 async def get_weather(city):
-    url = f"https://wttr.in/{city}?format=%C+%t+%w&lang=ru"
+    url = f"https://wttr.in/{city}?format=%C+%t&lang=ru"
     try:
         async with aiohttp.ClientSession() as s:
             async with s.get(url, timeout=10) as r:
                 if r.status == 200:
                     weather = await r.text()
                     return f"🌤️ {city.capitalize()}: {weather}"
-                return f"❌ Город {city} не найден"
+                return f"❌ Город не найден"
     except:
-        return "❌ Ошибка. Проверь название города"
+        return "❌ Ошибка погоды"
 
 async def generate_image(prompt, user_id):
     salt = random.randint(1, 999999)
     last = last_image_prompts.get(user_id, "")
     if prompt == last:
-        prompt = f"{prompt} (другой вариант)"
+        prompt = f"{prompt} другой вариант"
     last_image_prompts[user_id] = prompt
     return f"https://image.pollinations.ai/prompt/{prompt.replace(' ', '%20')}?width=1024&height=1024&nologo=true&seed={salt}"
 
@@ -149,20 +149,16 @@ async def handle_message(update, context):
         return
 
     if text == "🎨 Картинка":
-        await update.message.reply_text("🖌️ Опиши, что нарисовать\n(отмена — выйти)")
+        await update.message.reply_text("🖌️ Опиши, что нарисовать (отмена — выйти)")
         waiting_for_image[user_id] = True
         return
 
     if text == "❓ Помощь":
         await update.message.reply_text(
             "📋 **Что умеет марGO:**\n\n"
-            "• 🌤️ **Погода** — кнопка + город\n"
-            "• 🎨 **Картинка** — кнопка + описание\n"
-            "• 📝 **Стили** — добавь: официально, для детей, коротко\n\n"
-            "Примеры:\n"
-            "— «Официально напиши письмо»\n"
-            "— «Для детей про космос»\n"
-            "— «Коротко что такое ИИ»",
+            "• 🌤️ Погода — кнопка + город\n"
+            "• 🎨 Картинка — кнопка + описание\n"
+            "• 📝 Стили — добавь: официально, для детей, коротко",
             parse_mode="Markdown"
         )
         return
@@ -186,7 +182,6 @@ async def handle_message(update, context):
         clean = text
     
     await update.message.reply_text("💭 Думаю...")
-    name = user_names.get(user_id, "друг")
     answer = await ask_groq(clean, style)
     await update.message.reply_text(answer)
 
@@ -203,6 +198,8 @@ def run_bot():
     bot_app.run_polling()
 
 if __name__ == "__main__":
-    web_thread = threading.Thread(target=run_web)
-    web_thread.start()
+    # Запускаем Flask в отдельном потоке
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.start()
+    # Запускаем бота
     run_bot()
