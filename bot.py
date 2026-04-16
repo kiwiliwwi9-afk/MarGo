@@ -4,16 +4,24 @@ import asyncio
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# ========== БЕРЁМ КЛЮЧИ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ (RAILWAY/RENDER) ==========
-TOKEN = os.getenv("8737782674:AAGFDh3KdhFaVu3lp4QFm-2_cR-_Ne7hICY")
-GROQ_KEY = os.getenv("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")
+# ========== ЗАГРУЗКА ПЕРЕМЕННЫХ ==========
+TOKEN = os.getenv("BOT_TOKEN")
+GROQ_KEY = os.getenv("GROQ_KEY")
 
-# Проверка, что ключи есть
+# ========== ПРОВЕРКА (ВИДНО В ЛОГАХ) ==========
+print("=" * 50)
+print(f"BOT_TOKEN загружен: {'✅ ДА' if TOKEN else '❌ НЕТ'}")
+print(f"GROQ_KEY загружен: {'✅ ДА' if GROQ_KEY else '❌ НЕТ'}")
+if TOKEN:
+    print(f"TOKEN начинается с: {TOKEN[:15]}...")
+print("=" * 50)
+
 if not TOKEN:
     raise ValueError("❌ BOT_TOKEN не найден! Добавь переменную в Railway")
 if not GROQ_KEY:
     raise ValueError("❌ GROQ_KEY не найден! Добавь переменную в Railway")
 
+# ========== ОСТАЛЬНОЙ КОД ==========
 user_names = {}
 
 def get_keyboard():
@@ -48,7 +56,7 @@ async def generate_image(prompt):
     url = f"https://image.pollinations.ai/prompt/{prompt.replace(' ', '%20')}?width=1024&height=1024&nologo=true"
     return url
 
-async def start(update, context):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id in user_names:
         name = user_names[user_id]
@@ -63,7 +71,7 @@ async def start(update, context):
         )
         context.user_data['waiting_for_name'] = True
 
-async def handle_message(update, context):
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
     ud = context.user_data
