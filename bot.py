@@ -186,10 +186,33 @@ async def handle_message(update, context):
         img = await generate_image(text, user_id)
         await update.message.reply_photo(img, caption=f"🎨 {text}")
         waiting_for_image[user_id] = False
-        return
+        # ===== ОСНОВНОЙ ДИАЛОГ С ПАМЯТЬЮ =====
+await update.message.reply_text("💭 Думаю...")
 
-    # ===== ОСНОВНОЙ ДИАЛОГ С ПАМЯТЬЮ =====
-    await update.message.reply_text("💭 Думаю...")
+# Добавляем сообщение пользователя в историю
+history.append({"role": "user", "content": text})
+
+# Формируем промпт с историей (последние 10 сообщений)
+memory_prompt = ""
+if history[:-1]:
+    # Просто даём историю, без слов "учитывая предыдущий разговор"
+    memory_prompt = "Вот история нашего диалога:\n"
+    for msg in history[-10:]:
+        memory_prompt += f"{msg['role']}: {msg['content']}\n"
+    memory_prompt += f"\nПользователь ({name if name else 'друг'}): {text}\n"
+    memory_prompt += "Ответь естественно, продолжай разговор. НЕ ПИШИ слова 'в предыдущем разговоре', 'учитывая историю', 'как мы обсуждали'. Просто отвечай как обычный человек."
+else:
+    memory_prompt = f"Пользователь ({name if name else 'друг'}): {text}"
+
+answer = await ask_groq(memory_prompt)
+
+# Добавляем ответ в историю
+history.append({"role": "assistant", "content": answer})
+
+# Сохраняем
+save_user_data(user_id, name if name else "друг", facts, history)
+
+await update.message.reply_text(answer)
 
     # Добавляем сообщение пользователя
     history.append({"role": "user", "content": text})
