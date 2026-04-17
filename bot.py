@@ -6,7 +6,7 @@ import threading
 import time
 import sqlite3
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -50,7 +50,7 @@ def save_user_data(user_id, name, facts, history):
     ''', (user_id, name, json.dumps(facts), json.dumps(history), datetime.now()))
     conn.commit()
 
-# ========== ВЕБ-СЕРВЕР ДЛЯ RENDER ==========
+# ========== ВЕБ-СЕРВЕР ==========
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
@@ -60,7 +60,6 @@ def health():
 def run_flask():
     flask_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
 
-# ========== АВТОПИНГ ==========
 def keep_alive():
     url = f"https://{os.environ.get('RENDER_EXTERNAL_URL', 'localhost')}"
     while True:
@@ -71,12 +70,67 @@ def keep_alive():
             pass
         time.sleep(240)
 
-# ========== КЛАВИАТУРА ==========
 def get_keyboard():
     buttons = [[KeyboardButton("🎨 Картинка"), KeyboardButton("🌤️ Погода")], [KeyboardButton("❓ Помощь")]]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
-# ========== ФУНКЦИИ ==========
+# ========== ПОГОДА НА НЕДЕЛЮ ==========
+async def get_weather_week(city):
+    url = f"https://wttr.in/{city}?format=%C+%t&lang=ru"
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get(url, timeout=10) as r:
+                if r.status == 200:
+                    return f"🌤️ {city.capitalize()}: {await r.text()}"
+                return f"❌ Город не найден"
+    except:
+        return "❌ Ошибка погоды"
+
+async def get_weather_forecast(city):
+    url = f"https://wttr.in/{city}?format=%C+%t&lang=ru&0-7"
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get(url, timeout=10) as r:
+                if r.status == 200:
+                    return f"📅 Прогноз на неделю для {city.capitalize()}:\n{await r.text()}"
+                return f"❌ Город не найден"
+    except:
+        return "❌ Ошибка прогноза"
+
+# ========== МЕМЫ ==========
+def get_meme():
+    memes = [
+        "🐱 Кот: 'Я вас не слышу, я вас не вижу, я вас не понимаю'",
+        "😂 Программист утром: 'О, я знаю, как это исправить!' Программист вечером: 'Переустановлю завтра'",
+        "🤖 Нейросеть: 'Я умная' Пользователь: '2+2?' Нейросеть: '5'",
+        "💬 марGO: 'Я всё помню' Пользователь: 'Что я сказал 5 сообщений назад?' марGO: '...'",
+        "🌍 GO World: 'Твой мир' Пользователь: 'А где моя фотка?' GO World: 'В разработке'"
+    ]
+    return random.choice(memes)
+
+# ========== ЦИТАТЫ ==========
+def get_quote():
+    quotes = [
+        "💡 Код — это поэзия, которую понимает компьютер.",
+        "🚀 Лучший способ предсказать будущее — создать его самому.",
+        "🤍 Простота — высшая сложность.",
+        "🌍 GO World — там, где ты можешь быть собой.",
+        "🧠 Нейросети не заменят людей, но люди с нейросетями заменят людей без них."
+    ]
+    return random.choice(quotes)
+
+# ========== ВИКТОРИНА ==========
+quiz_questions = [
+    {"question": "Сколько планет в Солнечной системе?", "options": ["7", "8", "9", "10"], "answer": "8"},
+    {"question": "Какой язык программирования самый популярный?", "options": ["Java", "Python", "C++", "JavaScript"], "answer": "Python"},
+    {"question": "Что такое API?", "options": ["Приложение", "Интерфейс для общения программ", "База данных", "Язык программирования"], "answer": "Интерфейс для общения 프로그램"},
+    {"question": "Кто создал Telegram?", "options": ["Илон Маск", "Павел Дуров", "Марк Цукерберг", "Билл Гейтс"], "answer": "Павел Дуров"},
+    {"question": "Что означает 'AI'?", "options": ["Artificial Intelligence", "Автоматическое Интегрирование", "Активное Исследование", "Автономный Инструмент"], "answer": "Artificial Intelligence"}
+]
+
+user_quiz = {}
+
+# ========== ОСНОВНЫЕ ФУНКЦИИ ==========
 async def ask_groq(prompt):
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"}
@@ -95,17 +149,6 @@ async def ask_groq(prompt):
                 return f"❌ Ошибка: {r.status}"
     except Exception as e:
         return f"❌ Ошибка: {str(e)}"
-
-async def get_weather(city):
-    url = f"https://wttr.in/{city}?format=%C+%t&lang=ru"
-    try:
-        async with aiohttp.ClientSession() as s:
-            async with s.get(url, timeout=10) as r:
-                if r.status == 200:
-                    return f"🌤️ {city.capitalize()}: {await r.text()}"
-                return f"❌ Город не найден"
-    except:
-        return "❌ Ошибка погоды"
 
 async def generate_image(prompt, user_id):
     salt = random.randint(1, 999999)
@@ -138,12 +181,16 @@ async def start(update, context):
     waiting_for_weather[user_id] = False
     
     if name:
-        await update.message.reply_text(f"🤍 С возвращением, {name}!", reply_markup=get_keyboard())
+        await update.message.reply_text(f"🤍 С возвращением, {name}!\n\nНапиши: нарисуй ... , погода в ... , /meme, /quote, /quiz", reply_markup=get_keyboard())
     else:
         await update.message.reply_text(
             "🤍 Привет! Я **марGO**.\n\n"
-            "🎨 **Картинка** — нажми кнопку и опиши\n"
-            "🌤️ **Погода** — нажми кнопку и напиши город\n\n"
+            "🎨 **Картинка** — просто напиши «нарисуй ...»\n"
+            "🌤️ **Погода** — просто напиши «погода в ...»\n"
+            "📅 **Прогноз на неделю** — напиши «погода в ... на неделю»\n"
+            "😂 **Мемы** — /meme\n"
+            "💡 **Цитаты** — /quote\n"
+            "❓ **Викторина** — /quiz\n\n"
             "Как тебя зовут?",
             parse_mode="Markdown"
         )
@@ -163,29 +210,82 @@ async def handle_message(update, context):
     if ud.get('waiting_for_name'):
         new_name = text.strip()
         save_user_data(user_id, new_name, facts, history)
-        await update.message.reply_text(f"🤍 Приятно познакомиться, **{new_name}**!", parse_mode="Markdown", reply_markup=get_keyboard())
+        await update.message.reply_text(f"🤍 Приятно познакомиться, **{new_name}**!\n\nНапиши: нарисуй кота, погода в Москве, /meme, /quote, /quiz", parse_mode="Markdown", reply_markup=get_keyboard())
         ud['waiting_for_name'] = False
         return
 
+    # ===== КАРТИНКИ БЕЗ КНОПКИ =====
+    if text.lower().startswith("нарисуй"):
+        prompt = text[7:].strip()
+        if not prompt:
+            await update.message.reply_text("🖌️ Что нарисовать? Например: «нарисуй кота в космосе»")
+            return
+        await update.message.reply_text("🎨 Рисую...")
+        img = await generate_image(prompt, user_id)
+        await update.message.reply_photo(img, caption=f"🎨 {prompt}")
+        return
+
+    # ===== ПОГОДА БЕЗ КНОПКИ =====
+    if text.lower().startswith("погода в"):
+        city = text[8:].strip()
+        if not city:
+            await update.message.reply_text("🏙️ Напиши город. Например: «погода в Москве»")
+            return
+        
+        # Проверяем, хочет ли пользователь прогноз на неделю
+        if "на неделю" in city.lower():
+            city = city.replace("на неделю", "").strip()
+            await update.message.reply_text("📅 Смотрю прогноз на неделю...")
+            weather = await get_weather_forecast(city)
+            await update.message.reply_text(weather)
+        else:
+            await update.message.reply_text("🔍 Смотрю погоду...")
+            weather = await get_weather_week(city)
+            await update.message.reply_text(weather)
+        return
+
+    # ===== КНОПКИ =====
     if text == "🌤️ Погода":
-        await update.message.reply_text("🏙️ Напиши название города")
+        await update.message.reply_text("🏙️ Напиши город. Например: «погода в Москве» или «погода в Москве на неделю»")
         waiting_for_weather[user_id] = True
         return
 
     if waiting_for_weather.get(user_id, False):
-        await update.message.reply_text("🔍 Смотрю погоду...")
-        weather = await get_weather(text)
-        await update.message.reply_text(weather)
+        if "на неделю" in text.lower():
+            city = text.lower().replace("на неделю", "").replace("погода в", "").strip()
+            if not city:
+                await update.message.reply_text("🏙️ Напиши город. Например: «Москва»")
+                return
+            await update.message.reply_text("📅 Смотрю прогноз на неделю...")
+            weather = await get_weather_forecast(city)
+            await update.message.reply_text(weather)
+        else:
+            city = text.lower().replace("погода в", "").strip()
+            if not city:
+                await update.message.reply_text("🏙️ Напиши город. Например: «Москва»")
+                return
+            await update.message.reply_text("🔍 Смотрю погоду...")
+            weather = await get_weather_week(city)
+            await update.message.reply_text(weather)
         waiting_for_weather[user_id] = False
         return
 
     if text == "🎨 Картинка":
-        await update.message.reply_text("🖌️ Опиши, что нарисовать (отмена — выйти)")
+        await update.message.reply_text("🖌️ Опиши, что нарисовать. Например: «нарисуй кота в космосе»")
         waiting_for_image[user_id] = True
         return
 
     if text == "❓ Помощь":
-        await update.message.reply_text("📋 Кнопки: Картинка, Погода\n\n🧠 Я помню наш диалог и не повторяюсь!")
+        await update.message.reply_text(
+            "📋 **Что умеет марGO:**\n\n"
+            "• 🎨 **Картинка** — напиши «нарисуй ...»\n"
+            "• 🌤️ **Погода** — напиши «погода в ...» или «погода в ... на неделю»\n"
+            "• 😂 **Мемы** — /meme\n"
+            "• 💡 **Цитаты** — /quote\n"
+            "• ❓ **Викторина** — /quiz\n\n"
+            "🧠 Я помню наш диалог и не повторяюсь!",
+            parse_mode="Markdown"
+        )
         return
 
     if text.lower() == "отмена":
@@ -195,18 +295,17 @@ async def handle_message(update, context):
         return
 
     if waiting_for_image.get(user_id, False):
-        await update.message.reply_text("🎨 Рисую картинку...")
+        await update.message.reply_text("🎨 Рисую...")
         img = await generate_image(text, user_id)
         await update.message.reply_photo(img, caption=f"🎨 {text}")
         waiting_for_image[user_id] = False
         return
 
-    # ===== ОСНОВНОЙ ДИАЛОГ С ПАМЯТЬЮ (БЕЗ ЗАНУДСТВА) =====
+    # ===== ОБЫЧНЫЙ ДИАЛОГ =====
     await update.message.reply_text("💭 Думаю...")
 
     history.append({"role": "user", "content": text})
 
-    # Формируем промпт с историей
     memory_prompt = ""
     if history:
         memory_prompt = "Вот история диалога:\n"
@@ -224,6 +323,49 @@ async def handle_message(update, context):
 
     await update.message.reply_text(answer)
 
+# ===== КОМАНДЫ =====
+async def meme(update, context):
+    await update.message.reply_text(get_meme())
+
+async def quote(update, context):
+    await update.message.reply_text(get_quote())
+
+async def quiz(update, context):
+    user_id = update.effective_user.id
+    q = random.choice(quiz_questions)
+    user_quiz[user_id] = {"question": q["question"], "answer": q["answer"]}
+    options = "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(q["options"])])
+    await update.message.reply_text(f"❓ {q['question']}\n\n{options}\n\nНапиши номер ответа (1-{len(q['options'])})")
+
+async def quiz_answer(update, context):
+    user_id = update.effective_user.id
+    if user_id not in user_quiz:
+        await update.message.reply_text("Напиши /quiz, чтобы начать викторину")
+        return
+    
+    try:
+        answer_num = int(update.message.text)
+        q = user_quiz[user_id]
+        correct_answer = q["answer"]
+        # Получаем текст ответа по номеру
+        q_data = next((item for item in quiz_questions if item["question"] == q["question"]), None)
+        if q_data:
+            options = q_data["options"]
+            if 1 <= answer_num <= len(options):
+                user_answer = options[answer_num - 1]
+                if user_answer == correct_answer:
+                    await update.message.reply_text("✅ Правильно! 🎉")
+                else:
+                    await update.message.reply_text(f"❌ Неправильно. Правильный ответ: {correct_answer}")
+            else:
+                await update.message.reply_text(f"Введи число от 1 до {len(options)}")
+        else:
+            await update.message.reply_text("Ошибка. Попробуй /quiz заново")
+    except ValueError:
+        await update.message.reply_text("Напиши номер ответа цифрой")
+    
+    del user_quiz[user_id]
+
 def run_bot():
     try:
         asyncio.get_running_loop()
@@ -232,7 +374,12 @@ def run_bot():
     
     bot_app = Application.builder().token(TOKEN).build()
     bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(CommandHandler("meme", meme))
+    bot_app.add_handler(CommandHandler("quote", quote))
+    bot_app.add_handler(CommandHandler("quiz", quiz))
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    # Для ответов на викторину нужно добавить обработчик
+    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, quiz_answer))
     print("✅ марGO запущена!")
     bot_app.run_polling()
 
