@@ -50,12 +50,12 @@ def save_user_data(user_id, name, facts, history):
     ''', (user_id, name, json.dumps(facts), json.dumps(history), datetime.now()))
     conn.commit()
 
-# ========== ВЕБ-СЕРВЕР ==========
+# ========== ВЕБ-СЕРВЕР ДЛЯ RENDER ==========
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
 def health():
-    return "Бот марGO работает!"
+    return "Бот марGO работает 24/7!"
 
 def run_flask():
     flask_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
@@ -67,9 +67,8 @@ def keep_alive():
         try:
             import requests
             requests.get(url, timeout=10)
-            print("✅ Пинг отправлен")
         except:
-            print("❌ Ошибка пинга")
+            pass
         time.sleep(240)
 
 # ========== КЛАВИАТУРА ==========
@@ -77,7 +76,7 @@ def get_keyboard():
     buttons = [[KeyboardButton("🎨 Картинка"), KeyboardButton("🌤️ Погода")], [KeyboardButton("❓ Помощь")]]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
-# ========== ОСНОВНЫЕ ФУНКЦИИ ==========
+# ========== ФУНКЦИИ ==========
 async def ask_groq(prompt):
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"}
@@ -112,10 +111,25 @@ async def generate_image(prompt, user_id):
     salt = random.randint(1, 999999)
     return f"https://image.pollinations.ai/prompt/{prompt.replace(' ', '%20')}?width=1024&height=1024&nologo=true&seed={salt}"
 
+def detect_style(text):
+    t = text.lower()
+    if "официально" in t:
+        return "official"
+    if "для детей" in t:
+        return "child"
+    if "коротко" in t:
+        return "short"
+    return "normal"
+
+def clean_text(text):
+    t = text
+    for word in ["официально", "серьёзно", "деловой", "для детей", "детям", "ребёнку", "коротко", "кратко"]:
+        t = t.replace(word, "")
+    return t.strip()
+
 # ========== БОТ ==========
 waiting_for_image = {}
 waiting_for_weather = {}
-last_image_prompts = {}
 
 async def start(update, context):
     user_id = update.effective_user.id
@@ -124,13 +138,12 @@ async def start(update, context):
     waiting_for_weather[user_id] = False
     
     if name:
-        await update.message.reply_text(f"🤍 С возвращением, {name}! Я помню наш разговор.", reply_markup=get_keyboard())
+        await update.message.reply_text(f"🤍 С возвращением, {name}!", reply_markup=get_keyboard())
     else:
         await update.message.reply_text(
-            "🤍 Привет! Я **марGO** с памятью.\n\n"
-            "Я запоминаю наш диалог.\n"
-            "🎨 Картинка — нажми кнопку\n"
-            "🌤️ Погода — нажми кнопку\n\n"
+            "🤍 Привет! Я **марGO**.\n\n"
+            "🎨 **Картинка** — нажми кнопку и опиши\n"
+            "🌤️ **Погода** — нажми кнопку и напиши город\n\n"
             "Как тебя зовут?",
             parse_mode="Markdown"
         )
@@ -167,12 +180,12 @@ async def handle_message(update, context):
         return
 
     if text == "🎨 Картинка":
-        await update.message.reply_text("🖌️ Опиши, что нарисовать")
+        await update.message.reply_text("🖌️ Опиши, что нарисовать (отмена — выйти)")
         waiting_for_image[user_id] = True
         return
 
     if text == "❓ Помощь":
-        await update.message.reply_text("📋 Кнопки: Картинка, Погода\n\n🧠 Я помню наш диалог!")
+        await update.message.reply_text("📋 Кнопки: Картинка, Погода\n\n🧠 Я помню наш диалог и не повторяюсь!")
         return
 
     if text.lower() == "отмена":
@@ -186,54 +199,27 @@ async def handle_message(update, context):
         img = await generate_image(text, user_id)
         await update.message.reply_photo(img, caption=f"🎨 {text}")
         waiting_for_image[user_id] = False
-        # ===== ОСНОВНОЙ ДИАЛОГ С ПАМЯТЬЮ =====
-await update.message.reply_text("💭 Думаю...")
+        return
 
-# Добавляем сообщение пользователя в историю
-history.append({"role": "user", "content": text})
+    # ===== ОСНОВНОЙ ДИАЛОГ С ПАМЯТЬЮ (БЕЗ ЗАНУДСТВА) =====
+    await update.message.reply_text("💭 Думаю...")
 
-# Формируем промпт с историей (последние 10 сообщений)
-memory_prompt = ""
-if history[:-1]:
-    # Просто даём историю, без слов "учитывая предыдущий разговор"
-    memory_prompt = "Вот история нашего диалога:\n"
-    for msg in history[-10:]:
-        memory_prompt += f"{msg['role']}: {msg['content']}\n"
-    memory_prompt += f"\nПользователь ({name if name else 'друг'}): {text}\n"
-    memory_prompt += "Ответь естественно, продолжай разговор. НЕ ПИШИ слова 'в предыдущем разговоре', 'учитывая историю', 'как мы обсуждали'. Просто отвечай как обычный человек."
-else:
-    memory_prompt = f"Пользователь ({name if name else 'друг'}): {text}"
-
-answer = await ask_groq(memory_prompt)
-
-# Добавляем ответ в историю
-history.append({"role": "assistant", "content": answer})
-
-# Сохраняем
-save_user_data(user_id, name if name else "друг", facts, history)
-
-await update.message.reply_text(answer)
-
-    # Добавляем сообщение пользователя
     history.append({"role": "user", "content": text})
 
-    # Формируем промпт с историей (последние 10 сообщений)
+    # Формируем промпт с историей
     memory_prompt = ""
-    if history[:-1]:
-        memory_prompt = "Вот что мы обсуждали ранее (не повторяйся, учитывай контекст):\n"
+    if history:
+        memory_prompt = "Вот история диалога:\n"
         for msg in history[-10:]:
             memory_prompt += f"{msg['role']}: {msg['content']}\n"
-        memory_prompt += f"Теперь пользователь ({name if name else 'друг'}): {text}\nОтветь, учитывая историю. Не спрашивай то, что уже было сказано."
-
+        memory_prompt += f"\nПользователь: {text}\n"
+        memory_prompt += "Ответь естественно, продолжай разговор. НЕ ИСПОЛЬЗУЙ фразы типа 'в предыдущем разговоре', 'учитывая историю', 'как мы обсуждали'. Просто отвечай как обычный человек."
     else:
-        memory_prompt = f"Пользователь ({name if name else 'друг'}): {text}"
+        memory_prompt = text
 
     answer = await ask_groq(memory_prompt)
 
-    # Добавляем ответ в историю
     history.append({"role": "assistant", "content": answer})
-
-    # Сохраняем
     save_user_data(user_id, name if name else "друг", facts, history)
 
     await update.message.reply_text(answer)
@@ -247,7 +233,7 @@ def run_bot():
     bot_app = Application.builder().token(TOKEN).build()
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("✅ марGO с памятью запущена!")
+    print("✅ марGO запущена!")
     bot_app.run_polling()
 
 if __name__ == "__main__":
