@@ -6,10 +6,12 @@ import threading
 import time
 import sqlite3
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 from flask import Flask
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from gtts import gTTS
+import io
 
 TOKEN = os.environ.get("BOT_TOKEN")
 GROQ_KEY = os.environ.get("GROQ_KEY")
@@ -26,28 +28,30 @@ cursor.execute('''
         name TEXT,
         facts TEXT,
         history TEXT,
+        voice_lang TEXT DEFAULT 'ru',
         last_active TIMESTAMP
     )
 ''')
 conn.commit()
 
 def get_user_data(user_id):
-    cursor.execute("SELECT name, facts, history FROM users WHERE user_id = ?", (user_id,))
+    cursor.execute("SELECT name, facts, history, voice_lang FROM users WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
     if row:
         name = row[0]
         facts = json.loads(row[1]) if row[1] else {}
         history = json.loads(row[2]) if row[2] else []
-        return name, facts, history
-    return None, {}, []
+        voice_lang = row[3] if row[3] else 'ru'
+        return name, facts, history, voice_lang
+    return None, {}, [], 'ru'
 
-def save_user_data(user_id, name, facts, history):
+def save_user_data(user_id, name, facts, history, voice_lang='ru'):
     if len(history) > 20:
         history = history[-20:]
     cursor.execute('''
-        INSERT OR REPLACE INTO users (user_id, name, facts, history, last_active)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (user_id, name, json.dumps(facts), json.dumps(history), datetime.now()))
+        INSERT OR REPLACE INTO users (user_id, name, facts, history, voice_lang, last_active)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (user_id, name, json.dumps(facts), json.dumps(history), voice_lang, datetime.now()))
     conn.commit()
 
 # ========== ВЕБ-СЕРВЕР ==========
@@ -71,11 +75,14 @@ def keep_alive():
         time.sleep(240)
 
 def get_keyboard():
-    buttons = [[KeyboardButton("🎨 Картинка"), KeyboardButton("🌤️ Погода")], [KeyboardButton("❓ Помощь")]]
+    buttons = [
+        [KeyboardButton("🎨 Картинка"), KeyboardButton("🌤️ Погода")],
+        [KeyboardButton("🎤 Голос"), KeyboardButton("❓ Помощь")]
+    ]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
-# ========== ПОГОДА НА НЕДЕЛЮ ==========
-async def get_weather_week(city):
+# ========== ПОГОДА ==========
+async def get_weather(city):
     url = f"https://wttr.in/{city}?format=%C+%t&lang=ru"
     try:
         async with aiohttp.ClientSession() as s:
@@ -97,25 +104,50 @@ async def get_weather_forecast(city):
     except:
         return "❌ Ошибка прогноза"
 
-# ========== МЕМЫ ==========
+# ========== КАРТИНКИ ==========
+async def generate_image(prompt, user_id):
+    salt = random.randint(1, 999999)
+    return f"https://image.pollinations.ai/prompt/{prompt.replace(' ', '%20')}?width=1024&height=1024&nologo=true&seed={salt}"
+
+# ========== ГОЛОС ==========
+async def text_to_voice(text, lang='ru'):
+    try:
+        tts = gTTS(text=text[:500], lang=lang, slow=False)
+        audio_bytes = io.BytesIO()
+        tts.write_to_fp(audio_bytes)
+        audio_bytes.seek(0)
+        return audio_bytes
+    except Exception as e:
+        print(f"Ошибка озвучки: {e}")
+        return None
+
+# Доступные языки для голоса
+VOICE_LANGS = {
+    'ru': '🇷🇺 Русский (женский)',
+    'ru-male': '🇷🇺 Русский (мужской) — через accent',
+    'en': '🇬🇧 English (женский)',
+    'fr': '🇫🇷 Français',
+    'de': '🇩🇪 Deutsch',
+    'es': '🇪🇸 Español',
+    'it': '🇮🇹 Italiano'
+}
+
+# ========== МЕМЫ И ЦИТАТЫ ==========
 def get_meme():
     memes = [
-        "🐱 Кот: 'Я вас не слышу, я вас не вижу, я вас не понимаю'",
-        "😂 Программист утром: 'О, я знаю, как это исправить!' Программист вечером: 'Переустановлю завтра'",
+        "🐱 Кот: 'Я вас не слышу, я вас не вижу'",
+        "😂 Программист утром: 'Я знаю, как это исправить!' Вечером: 'Переустановлю завтра'",
         "🤖 Нейросеть: 'Я умная' Пользователь: '2+2?' Нейросеть: '5'",
-        "💬 марGO: 'Я всё помню' Пользователь: 'Что я сказал 5 сообщений назад?' марGO: '...'",
-        "🌍 GO World: 'Твой мир' Пользователь: 'А где моя фотка?' GO World: 'В разработке'"
+        "💬 марGO: 'Я всё помню' Пользователь: 'Что я сказал?' марGO: '...'"
     ]
     return random.choice(memes)
 
-# ========== ЦИТАТЫ ==========
 def get_quote():
     quotes = [
         "💡 Код — это поэзия, которую понимает компьютер.",
         "🚀 Лучший способ предсказать будущее — создать его самому.",
         "🤍 Простота — высшая сложность.",
-        "🌍 GO World — там, где ты можешь быть собой.",
-        "🧠 Нейросети не заменят людей, но люди с нейросетями заменят людей без них."
+        "🌍 GO World — там, где ты можешь быть собой."
     ]
     return random.choice(quotes)
 
@@ -123,11 +155,9 @@ def get_quote():
 quiz_questions = [
     {"question": "Сколько планет в Солнечной системе?", "options": ["7", "8", "9", "10"], "answer": "8"},
     {"question": "Какой язык программирования самый популярный?", "options": ["Java", "Python", "C++", "JavaScript"], "answer": "Python"},
-    {"question": "Что такое API?", "options": ["Приложение", "Интерфейс для общения программ", "База данных", "Язык программирования"], "answer": "Интерфейс для общения 프로그램"},
-    {"question": "Кто создал Telegram?", "options": ["Илон Маск", "Павел Дуров", "Марк Цукерберг", "Билл Гейтс"], "answer": "Павел Дуров"},
-    {"question": "Что означает 'AI'?", "options": ["Artificial Intelligence", "Автоматическое Интегрирование", "Активное Исследование", "Автономный Инструмент"], "answer": "Artificial Intelligence"}
+    {"question": "Что такое API?", "options": ["Приложение", "Интерфейс для общения программ", "База данных", "Язык"], "answer": "Интерфейс для общения программ"},
+    {"question": "Кто создал Telegram?", "options": ["Илон Маск", "Павел Дуров", "Марк Цукерберг", "Билл Гейтс"], "answer": "Павел Дуров"}
 ]
-
 user_quiz = {}
 
 # ========== ОСНОВНЫЕ ФУНКЦИИ ==========
@@ -149,10 +179,6 @@ async def ask_groq(prompt):
                 return f"❌ Ошибка: {r.status}"
     except Exception as e:
         return f"❌ Ошибка: {str(e)}"
-
-async def generate_image(prompt, user_id):
-    salt = random.randint(1, 999999)
-    return f"https://image.pollinations.ai/prompt/{prompt.replace(' ', '%20')}?width=1024&height=1024&nologo=true&seed={salt}"
 
 def detect_style(text):
     t = text.lower()
@@ -176,18 +202,25 @@ waiting_for_weather = {}
 
 async def start(update, context):
     user_id = update.effective_user.id
-    name, facts, history = get_user_data(user_id)
+    name, facts, history, voice_lang = get_user_data(user_id)
     waiting_for_image[user_id] = False
     waiting_for_weather[user_id] = False
     
     if name:
-        await update.message.reply_text(f"🤍 С возвращением, {name}!\n\nНапиши: нарисуй ... , погода в ... , /meme, /quote, /quiz", reply_markup=get_keyboard())
+        await update.message.reply_text(
+            f"🤍 С возвращением, {name}!\n\n"
+            f"🎤 Твой голос: {VOICE_LANGS.get(voice_lang, '🇷🇺 Русский')}\n"
+            f"Сменить голос: /voice_lang\n\n"
+            f"Напиши: нарисуй ..., погода в ..., /meme, /quote, /quiz",
+            reply_markup=get_keyboard()
+        )
     else:
         await update.message.reply_text(
             "🤍 Привет! Я **марGO**.\n\n"
-            "🎨 **Картинка** — просто напиши «нарисуй ...»\n"
-            "🌤️ **Погода** — просто напиши «погода в ...»\n"
-            "📅 **Прогноз на неделю** — напиши «погода в ... на неделю»\n"
+            "🎨 **Картинка** — «нарисуй ...»\n"
+            "🌤️ **Погода** — «погода в ...» или «погода в ... на неделю»\n"
+            "🎤 **Голос** — /voice (озвучит ответ)\n"
+            "🎧 **Сменить голос** — /voice_lang\n"
             "😂 **Мемы** — /meme\n"
             "💡 **Цитаты** — /quote\n"
             "❓ **Викторина** — /quiz\n\n"
@@ -200,7 +233,7 @@ async def handle_message(update, context):
     user_id = update.effective_user.id
     text = update.message.text
     ud = context.user_data
-    name, facts, history = get_user_data(user_id)
+    name, facts, history, voice_lang = get_user_data(user_id)
 
     if user_id not in waiting_for_image:
         waiting_for_image[user_id] = False
@@ -209,8 +242,13 @@ async def handle_message(update, context):
 
     if ud.get('waiting_for_name'):
         new_name = text.strip()
-        save_user_data(user_id, new_name, facts, history)
-        await update.message.reply_text(f"🤍 Приятно познакомиться, **{new_name}**!\n\nНапиши: нарисуй кота, погода в Москве, /meme, /quote, /quiz", parse_mode="Markdown", reply_markup=get_keyboard())
+        save_user_data(user_id, new_name, facts, history, 'ru')
+        await update.message.reply_text(
+            f"🤍 Приятно познакомиться, **{new_name}**!\n\n"
+            f"Напиши: нарисуй кота, погода в Москве, /meme, /quote, /quiz",
+            parse_mode="Markdown",
+            reply_markup=get_keyboard()
+        )
         ud['waiting_for_name'] = False
         return
 
@@ -232,7 +270,6 @@ async def handle_message(update, context):
             await update.message.reply_text("🏙️ Напиши город. Например: «погода в Москве»")
             return
         
-        # Проверяем, хочет ли пользователь прогноз на неделю
         if "на неделю" in city.lower():
             city = city.replace("на неделю", "").strip()
             await update.message.reply_text("📅 Смотрю прогноз на неделю...")
@@ -240,7 +277,7 @@ async def handle_message(update, context):
             await update.message.reply_text(weather)
         else:
             await update.message.reply_text("🔍 Смотрю погоду...")
-            weather = await get_weather_week(city)
+            weather = await get_weather(city)
             await update.message.reply_text(weather)
         return
 
@@ -250,40 +287,32 @@ async def handle_message(update, context):
         waiting_for_weather[user_id] = True
         return
 
-    if waiting_for_weather.get(user_id, False):
-        if "на неделю" in text.lower():
-            city = text.lower().replace("на неделю", "").replace("погода в", "").strip()
-            if not city:
-                await update.message.reply_text("🏙️ Напиши город. Например: «Москва»")
-                return
-            await update.message.reply_text("📅 Смотрю прогноз на неделю...")
-            weather = await get_weather_forecast(city)
-            await update.message.reply_text(weather)
-        else:
-            city = text.lower().replace("погода в", "").strip()
-            if not city:
-                await update.message.reply_text("🏙️ Напиши город. Например: «Москва»")
-                return
-            await update.message.reply_text("🔍 Смотрю погоду...")
-            weather = await get_weather_week(city)
-            await update.message.reply_text(weather)
-        waiting_for_weather[user_id] = False
-        return
-
     if text == "🎨 Картинка":
         await update.message.reply_text("🖌️ Опиши, что нарисовать. Например: «нарисуй кота в космосе»")
         waiting_for_image[user_id] = True
         return
 
+    if text == "🎤 Голос":
+        await update.message.reply_text(
+            "🎤 **Голосовые команды:**\n\n"
+            "• /voice — озвучить последний ответ\n"
+            "• /voice_lang — выбрать язык/голос\n\n"
+            f"Текущий голос: {VOICE_LANGS.get(voice_lang, '🇷🇺 Русский')}",
+            parse_mode="Markdown"
+        )
+        return
+
     if text == "❓ Помощь":
         await update.message.reply_text(
             "📋 **Что умеет марGO:**\n\n"
-            "• 🎨 **Картинка** — напиши «нарисуй ...»\n"
-            "• 🌤️ **Погода** — напиши «погода в ...» или «погода в ... на неделю»\n"
+            "• 🎨 **Картинка** — «нарисуй ...»\n"
+            "• 🌤️ **Погода** — «погода в ...» или «... на неделю»\n"
+            "• 🎤 **Голос** — /voice\n"
+            "• 🎧 **Сменить голос** — /voice_lang\n"
             "• 😂 **Мемы** — /meme\n"
             "• 💡 **Цитаты** — /quote\n"
             "• ❓ **Викторина** — /quiz\n\n"
-            "🧠 Я помню наш диалог и не повторяюсь!",
+            "🧠 Я помню наш диалог!",
             parse_mode="Markdown"
         )
         return
@@ -301,6 +330,26 @@ async def handle_message(update, context):
         waiting_for_image[user_id] = False
         return
 
+    if waiting_for_weather.get(user_id, False):
+        if "на неделю" in text.lower():
+            city = text.lower().replace("на неделю", "").replace("погода в", "").strip()
+            if not city:
+                await update.message.reply_text("🏙️ Напиши город")
+                return
+            await update.message.reply_text("📅 Смотрю прогноз...")
+            weather = await get_weather_forecast(city)
+            await update.message.reply_text(weather)
+        else:
+            city = text.lower().replace("погода в", "").strip()
+            if not city:
+                await update.message.reply_text("🏙️ Напиши город")
+                return
+            await update.message.reply_text("🔍 Смотрю погоду...")
+            weather = await get_weather(city)
+            await update.message.reply_text(weather)
+        waiting_for_weather[user_id] = False
+        return
+
     # ===== ОБЫЧНЫЙ ДИАЛОГ =====
     await update.message.reply_text("💭 Думаю...")
 
@@ -312,16 +361,19 @@ async def handle_message(update, context):
         for msg in history[-10:]:
             memory_prompt += f"{msg['role']}: {msg['content']}\n"
         memory_prompt += f"\nПользователь: {text}\n"
-        memory_prompt += "Ответь естественно, продолжай разговор. НЕ ИСПОЛЬЗУЙ фразы типа 'в предыдущем разговоре', 'учитывая историю', 'как мы обсуждали'. Просто отвечай как обычный человек."
+        memory_prompt += "Ответь естественно. НЕ используй фразы 'в предыдущем разговоре', 'учитывая историю'. Просто отвечай как обычный человек."
     else:
         memory_prompt = text
 
     answer = await ask_groq(memory_prompt)
 
     history.append({"role": "assistant", "content": answer})
-    save_user_data(user_id, name if name else "друг", facts, history)
+    save_user_data(user_id, name if name else "друг", facts, history, voice_lang)
 
     await update.message.reply_text(answer)
+    
+    # Сохраняем последний ответ для голоса
+    context.user_data['last_answer'] = answer
 
 # ===== КОМАНДЫ =====
 async def meme(update, context):
@@ -333,7 +385,7 @@ async def quote(update, context):
 async def quiz(update, context):
     user_id = update.effective_user.id
     q = random.choice(quiz_questions)
-    user_quiz[user_id] = {"question": q["question"], "answer": q["answer"]}
+    user_quiz[user_id] = {"question": q["question"], "answer": q["answer"], "options": q["options"]}
     options = "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(q["options"])])
     await update.message.reply_text(f"❓ {q['question']}\n\n{options}\n\nНапиши номер ответа (1-{len(q['options'])})")
 
@@ -346,25 +398,68 @@ async def quiz_answer(update, context):
     try:
         answer_num = int(update.message.text)
         q = user_quiz[user_id]
+        options = q["options"]
         correct_answer = q["answer"]
-        # Получаем текст ответа по номеру
-        q_data = next((item for item in quiz_questions if item["question"] == q["question"]), None)
-        if q_data:
-            options = q_data["options"]
-            if 1 <= answer_num <= len(options):
-                user_answer = options[answer_num - 1]
-                if user_answer == correct_answer:
-                    await update.message.reply_text("✅ Правильно! 🎉")
-                else:
-                    await update.message.reply_text(f"❌ Неправильно. Правильный ответ: {correct_answer}")
+        
+        if 1 <= answer_num <= len(options):
+            user_answer = options[answer_num - 1]
+            if user_answer == correct_answer:
+                await update.message.reply_text("✅ Правильно! 🎉")
             else:
-                await update.message.reply_text(f"Введи число от 1 до {len(options)}")
+                await update.message.reply_text(f"❌ Неправильно. Правильный ответ: {correct_answer}")
         else:
-            await update.message.reply_text("Ошибка. Попробуй /quiz заново")
+            await update.message.reply_text(f"Введи число от 1 до {len(options)}")
     except ValueError:
         await update.message.reply_text("Напиши номер ответа цифрой")
     
     del user_quiz[user_id]
+
+async def voice(update, context):
+    user_id = update.effective_user.id
+    name, facts, history, voice_lang = get_user_data(user_id)
+    
+    # Берём последний ответ из истории
+    last_answer = None
+    if history and len(history) > 0:
+        for msg in reversed(history):
+            if msg.get('role') == 'assistant':
+                last_answer = msg.get('content')
+                break
+    
+    if last_answer:
+        await update.message.reply_text("🎤 Озвучиваю последний ответ...")
+        audio = await text_to_voice(last_answer, voice_lang.split('-')[0])
+        if audio:
+            await update.message.reply_voice(audio, caption="🎙️ марGO говорит")
+        else:
+            await update.message.reply_text("❌ Не удалось озвучить")
+    else:
+        await update.message.reply_text("Сначала что-нибудь спроси, чтобы я ответила")
+
+async def voice_lang(update, context):
+    user_id = update.effective_user.id
+    name, facts, history, voice_lang = get_user_data(user_id)
+    
+    lang_list = "\n".join([f"{code} — {name}" for code, name in VOICE_LANGS.items()])
+    await update.message.reply_text(
+        f"🎧 **Выбери язык/голос:**\n\n{lang_list}\n\n"
+        f"Текущий: {VOICE_LANGS.get(voice_lang, 'ru')}\n\n"
+        f"Напиши код языка (например, ru, en, fr)",
+        parse_mode="Markdown"
+    )
+    context.user_data['waiting_for_voice_lang'] = True
+
+async def set_voice_lang(update, context):
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+    
+    if text in VOICE_LANGS:
+        name, facts, history, _ = get_user_data(user_id)
+        save_user_data(user_id, name, facts, history, text)
+        await update.message.reply_text(f"✅ Голос изменён на {VOICE_LANGS[text]}")
+        context.user_data['waiting_for_voice_lang'] = False
+    else:
+        await update.message.reply_text(f"❌ Неизвестный код. Доступны: {', '.join(VOICE_LANGS.keys())}")
 
 def run_bot():
     try:
@@ -377,10 +472,12 @@ def run_bot():
     bot_app.add_handler(CommandHandler("meme", meme))
     bot_app.add_handler(CommandHandler("quote", quote))
     bot_app.add_handler(CommandHandler("quiz", quiz))
+    bot_app.add_handler(CommandHandler("voice", voice))
+    bot_app.add_handler(CommandHandler("voice_lang", voice_lang))
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    # Для ответов на викторину нужно добавить обработчик
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, quiz_answer))
-    print("✅ марGO запущена!")
+    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, set_voice_lang))
+    print("✅ марGO с голосом запущена!")
     bot_app.run_polling()
 
 if __name__ == "__main__":
