@@ -1,5 +1,6 @@
-python-telegram-bot==21.*
-aiohttp
 flask
-requests
-gtts
+flask-sqlalchemy
+flask-login
+aiohttp
+gunicorn
+psycopg2-binary
