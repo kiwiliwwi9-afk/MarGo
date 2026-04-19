@@ -4,3 +4,4 @@ flask-login
 aiohttp
 gunicorn
 psycopg2-binary
+pillow
