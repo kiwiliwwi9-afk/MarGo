@@ -1,2 +1,8 @@
-python-telegram-bot
+flask
+flask-sqlalchemy
+flask-login
 aiohttp
+gunicorn
+psycopg2-binary
+pillow
+python-telegram-bot
