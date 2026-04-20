@@ -4,6 +4,8 @@ import asyncio
 import random
 import logging
 import threading
+import time
+import requests
 from flask import Flask
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -17,6 +19,17 @@ def health():
 
 def run_web():
     web_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
+
+# ========== АВТОПИНГ (ЧТОБЫ НЕ ЗАСЫПАЛ) ==========
+def keep_alive():
+    url = f"https://{os.environ.get('RENDER_EXTERNAL_URL', 'localhost')}"
+    while True:
+        try:
+            requests.get(url, timeout=10)
+            print("✅ Пинг отправлен")
+        except Exception as e:
+            print(f"❌ Ошибка пинга: {e}")
+        time.sleep(240)  # каждые 4 минуты
 
 # ========== НАСТРОЙКИ ==========
 TOKEN = os.environ.get("BOT_TOKEN")
@@ -99,14 +112,15 @@ async def start(update, context):
     waiting_for_image[user_id] = False
     waiting_for_city[user_id] = False
     await update.message.reply_text(
-        "🤍 Привет! Я марGO\n\n"
-        "🎨 Картинка — нажми кнопку\n"
-        "🌤️ Погода — нажми кнопку\n"
-        "😂 Мем — случайная шутка\n\n"
-        "Быстрые команды:\n"
+        "🤍 **Привет! Я марGO — твой умный помощник!**\n\n"
+        "🎨 **Картинка** — нажми кнопку\n"
+        "🌤️ **Погода** — нажми кнопку\n"
+        "😂 **Мем** — случайная шутка\n\n"
+        "**Быстрые команды:**\n"
         "• «нарисуй кота»\n"
         "• «погода в Москве»\n"
         "• «расскажи шутку»",
+        parse_mode="Markdown",
         reply_markup=get_keyboard()
     )
 
@@ -171,15 +185,16 @@ async def help_command(update, context):
     await update.message.reply_text("/start — перезапустить")
 
 def main():
-    # Запускаем веб-сервер для Render
+    # Запускаем веб-сервер
     threading.Thread(target=run_web).start()
-    
+    # Запускаем автопинг
+    threading.Thread(target=keep_alive).start()
     # Запускаем бота
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("✅ марGO запущен!")
+    print("✅ марGO с автопингом запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
