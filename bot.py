@@ -13,7 +13,7 @@ from flask import Flask
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# ========== ВЕБ-СЕРВЕР ДЛЯ ПИНГА ==========
+# ========== ВЕБ-СЕРВЕР ==========
 web_app = Flask(__name__)
 
 @web_app.route('/')
@@ -64,7 +64,8 @@ def save_history(user_id, history):
 
 # ========== НАСТРОЙКИ ==========
 TOKEN = os.environ.get("BOT_TOKEN")
-DEEPSEEK_KEY = os.environ.get("DEEPSEEK_KEY")
+GIGACHAT_CLIENT_ID = os.environ.get("GIGACHAT_CLIENT_ID")
+GIGACHAT_SECRET = os.environ.get("GIGACHAT_SECRET")
 OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY")
 
 if not TOKEN:
@@ -79,21 +80,40 @@ def get_keyboard():
     ]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
-# ========== DEEPSEEK (УМНЫЕ ОТВЕТЫ) ==========
-async def ask_deepseek(prompt):
-    if not DEEPSEEK_KEY:
-        return "🔌 DeepSeek не настроен. Добавь ключ в переменные."
+# ========== GIGACHAT ==========
+gigachat_token = None
+token_expiry = 0
+
+async def get_gigachat_token():
+    global gigachat_token, token_expiry
+    if gigachat_token and time.time() < token_expiry:
+        return gigachat_token
     
-    url = "https://api.deepseek.com/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {DEEPSEEK_KEY}",
-        "Content-Type": "application/json"
-    }
+    url = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+    headers = {"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"}
+    data = {"scope": "GIGACHAT_API_PERS", "client_id": GIGACHAT_CLIENT_ID, "client_secret": GIGACHAT_SECRET}
+    
+    async with aiohttp.ClientSession() as s:
+        async with s.post(url, headers=headers, data=data) as r:
+            if r.status == 200:
+                data = await r.json()
+                gigachat_token = data['access_token']
+                token_expiry = time.time() + 3600
+                return gigachat_token
+            return None
+
+async def ask_gigachat(prompt):
+    token = await get_gigachat_token()
+    if not token:
+        return "❌ Ошибка подключения, попробуй позже"
+    
+    url = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     payload = {
-        "model": "deepseek-chat",
+        "model": "GigaChat",
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 600,
-        "temperature": 0.8
+        "temperature": 0.8,
+        "max_tokens": 600
     }
     try:
         async with aiohttp.ClientSession() as s:
@@ -101,24 +121,24 @@ async def ask_deepseek(prompt):
                 if r.status == 200:
                     data = await r.json()
                     return data['choices'][0]['message']['content']
-                return f"❌ Ошибка DeepSeek: {r.status}"
+                return "❌ Ошибка, попробуй ещё раз"
     except Exception as e:
-        return f"❌ Ошибка: {str(e)}"
+        return "❌ Ошибка, попробуй позже"
 
-async def ask_deepseek_with_memory(prompt, history):
+async def ask_gigachat_with_memory(prompt, history):
     context = ""
     if history:
-        context = "История диалога:\n"
+        context = "Вот что мы уже обсуждали:\n"
         for msg in history[-8:]:
             role = "Пользователь" if msg['role'] == 'user' else "марGO"
             context += f"{role}: {msg['content']}\n"
         context += "\n"
     
-    full_prompt = f"{context}Пользователь: {prompt}\nмарGO:"
-    return await ask_deepseek(full_prompt)
+    full_prompt = f"{context}Пользователь: {prompt}\nОтветь как дружелюбный помощник, по имени марGO, кратко и по делу."
+    return await ask_gigachat(full_prompt)
 
-# ========== КАРТИНКИ (БЕСПЛАТНО) ==========
-async def generate_image_free(prompt):
+# ========== КАРТИНКИ ==========
+async def generate_image(prompt):
     enhanced = f"masterpiece, best quality, {prompt}"
     seed = random.randint(1, 999999)
     return f"https://image.pollinations.ai/prompt/{enhanced.replace(' ', '%20')}?width=1024&height=1024&nologo=true&seed={seed}"
@@ -159,7 +179,7 @@ async def start(update, context):
     waiting_for_city[user_id] = False
     save_history(user_id, [])
     await update.message.reply_text(
-        "🤍 Привет! Я марGO на DeepSeek\n\n"
+        "🤍 Привет! Я марGO — твой помощник.\n\n"
         "🎨 Картинка — нажми кнопку\n"
         "🌤️ Погода — нажми кнопку\n"
         "😂 Мем — случайная шутка\n\n"
@@ -180,7 +200,7 @@ async def handle_message(update, context):
 
     if waiting_for_image.get(user_id, False):
         await update.message.reply_text("🎨 Рисую...")
-        img = await generate_image_free(text)
+        img = await generate_image(text)
         await update.message.reply_photo(img, caption=text)
         waiting_for_image[user_id] = False
         return
@@ -213,7 +233,7 @@ async def handle_message(update, context):
         prompt = text[7:].strip()
         if prompt:
             await update.message.reply_text("🎨 Рисую...")
-            img = await generate_image_free(prompt)
+            img = await generate_image(prompt)
             await update.message.reply_photo(img, caption=prompt)
         return
 
@@ -227,9 +247,9 @@ async def handle_message(update, context):
         await update.message.reply_text(get_meme())
         return
 
-    await update.message.reply_text("💭 Думаю через DeepSeek...")
+    await update.message.reply_text("💭 Думаю...")
     history.append({"role": "user", "content": text})
-    answer = await ask_deepseek_with_memory(text, history)
+    answer = await ask_gigachat_with_memory(text, history)
     history.append({"role": "assistant", "content": answer})
     save_history(user_id, history)
     await update.message.reply_text(answer)
@@ -241,7 +261,7 @@ def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("✅ марGO на DeepSeek запущен!")
+    print("✅ марGO запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
