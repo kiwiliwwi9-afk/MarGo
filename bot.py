@@ -66,28 +66,24 @@ def get_keyboard():
     ]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
-# ========== УМНЫЕ ОТВЕТЫ С ПАМЯТЬЮ (ЖИВЫЕ) ==========
+# ========== УМНЫЕ ОТВЕТЫ (НОРМАЛЬНЫЕ) ==========
 async def ask_groq_with_memory(prompt, history):
-    # Формируем контекст из истории (последние 10 сообщений)
     context = ""
     if history:
-        context = "Вот что мы уже обсудили (не повторяйся, учитывай это):\n"
-        for msg in history[-10:]:
+        context = "Вот что мы уже обсуждали:\n"
+        for msg in history[-8:]:
             role = "Пользователь" if msg['role'] == 'user' else "марGO"
             context += f"{role}: {msg['content']}\n"
         context += "\n"
     
-    full_prompt = f"""Ты — марGO, живой, эмоциональный и умный помощник. Ты общаешься как подруга/друг, а не как робот.
+    full_prompt = f"""Ты — марGO, умный и дружелюбный помощник. Общайся естественно, как человек.
 
-ПРАВИЛА:
-1. Отвечай живо, с душой, как человек
-2. Используй эмодзи уместно (🤍, 🎨, 🌍, 😂, ✨, 💬, 🎉)
-3. Не будь сухим и официальным
-4. Проявляй эмпатию, радуйся, удивляйся
-5. Если пользователь грустит — поддержи
-6. Шути, но не перебарщивай
-7. Не повторяй то, что уже было сказано в истории
-8. Отвечай как добрая подруга, которая всегда рядом
+Правила:
+- Отвечай понятно и по делу
+- Будь доброжелательной
+- Используй эмодзи только к месту
+- Не будь слишком эмоциональной
+- Учитывай историю разговора
 
 {context}Пользователь: {prompt}
 марGO:"""
@@ -98,7 +94,7 @@ async def ask_groq_with_memory(prompt, history):
         "model": "llama-3.3-70b-versatile",
         "messages": [{"role": "user", "content": full_prompt}],
         "max_tokens": 600,
-        "temperature": 0.9
+        "temperature": 0.8
     }
     try:
         async with aiohttp.ClientSession() as s:
@@ -110,12 +106,9 @@ async def ask_groq_with_memory(prompt, history):
     except Exception as e:
         return f"❌ Ошибка: {str(e)}"
 
-async def ask_groq(prompt):
-    return await ask_groq_with_memory(prompt, [])
-
 # ========== КАРТИНКИ ==========
 async def generate_image(prompt):
-    enhanced = f"masterpiece, best quality, highly detailed, beautiful, {prompt}"
+    enhanced = f"masterpiece, best quality, {prompt}"
     seed = random.randint(1, 999999)
     return f"https://image.pollinations.ai/prompt/{enhanced.replace(' ', '%20')}?width=1024&height=1024&nologo=true&seed={seed}"
 
@@ -147,8 +140,7 @@ def get_meme():
     memes = [
         "🐱 Кот: 'Я вас не слышу'",
         "😂 Программист утром: 'Знаю как исправить!' Вечером: 'Переустановлю завтра'",
-        "🤖 Нейросеть: 'Я умная' Пользователь: '2+2?' Нейросеть: '5'",
-        "💬 марGO: 'Я всё помню' Пользователь: 'Что я сказал?' марGO: '...'"
+        "🤖 Нейросеть: 'Я умная' Пользователь: '2+2?' Нейросеть: '5'"
     ]
     return random.choice(memes)
 
@@ -160,30 +152,23 @@ async def start(update, context):
     user_id = update.effective_user.id
     waiting_for_image[user_id] = False
     waiting_for_city[user_id] = False
-    
-    # Очищаем историю при новом старте
     save_history(user_id, [])
     
     await update.message.reply_text(
-        "🤍 **Привет! Я марGO — твой живой и умный помощник!**\n\n"
-        "🧠 **Я запоминаю наш диалог и отвечаю как подруга!**\n\n"
-        "🎨 **Картинка** — нажми кнопку\n"
-        "🌤️ **Погода** — нажми кнопку\n"
-        "😂 **Мем** — случайная шутка\n\n"
-        "**Быстрые команды:**\n"
+        "🤍 Привет! Я марGO — твой помощник.\n\n"
+        "🎨 Картинка — нажми кнопку\n"
+        "🌤️ Погода — нажми кнопку\n"
+        "😂 Мем — случайная шутка\n\n"
+        "Быстрые команды:\n"
         "• «нарисуй кота»\n"
         "• «погода в Москве»\n"
-        "• «расскажи шутку»\n\n"
-        "Просто пиши, я всегда рядом 🤍",
-        parse_mode="Markdown",
+        "• «расскажи шутку»",
         reply_markup=get_keyboard()
     )
 
 async def handle_message(update, context):
     user_id = update.effective_user.id
     text = update.message.text
-    
-    # Получаем историю пользователя
     history = get_history(user_id)
 
     if user_id not in waiting_for_image:
@@ -191,7 +176,6 @@ async def handle_message(update, context):
     if user_id not in waiting_for_city:
         waiting_for_city[user_id] = False
 
-    # Режим ожидания картинки
     if waiting_for_image.get(user_id, False):
         await update.message.reply_text("🎨 Рисую...")
         img = await generate_image(text)
@@ -199,7 +183,6 @@ async def handle_message(update, context):
         waiting_for_image[user_id] = False
         return
 
-    # Режим ожидания города
     if waiting_for_city.get(user_id, False):
         if "на неделю" in text.lower():
             city = text.lower().replace("на неделю", "").strip()
@@ -210,7 +193,6 @@ async def handle_message(update, context):
         waiting_for_city[user_id] = False
         return
 
-    # Кнопки
     if text == "🎨 Картинка":
         await update.message.reply_text("🖌️ Опиши что нарисовать")
         waiting_for_image[user_id] = True
@@ -227,21 +209,14 @@ async def handle_message(update, context):
     
     if text == "❓ Помощь":
         await update.message.reply_text(
-            "📋 **Что умеет марGO:**\n\n"
-            "• 🎨 **Картинка** — нажми кнопку\n"
-            "• 🌤️ **Погода** — нажми кнопку\n"
-            "• 😂 **Мем** — случайная шутка\n"
-            "• 🧠 **Память** — я запоминаю наш диалог!\n\n"
-            "**Быстрые команды:**\n"
+            "Кнопки: Картинка, Погода, Мем\n\n"
+            "Быстрые команды:\n"
             "• «нарисуй кота»\n"
             "• «погода в Москве»\n"
-            "• «расскажи шутку»\n\n"
-            "Просто пиши, я всегда отвечу живо и с душой 🤍",
-            parse_mode="Markdown"
+            "• «расскажи шутку»"
         )
         return
 
-    # Быстрые команды
     if text.lower().startswith("нарисуй"):
         prompt = text[7:].strip()
         if prompt:
@@ -264,40 +239,25 @@ async def handle_message(update, context):
         await update.message.reply_text(get_meme())
         return
 
-    # Умный ответ с памятью (живой)
     await update.message.reply_text("💭 Думаю...")
     
-    # Добавляем сообщение пользователя в историю
     history.append({"role": "user", "content": text})
-    
-    # Получаем ответ с учётом истории
     answer = await ask_groq_with_memory(text, history)
-    
-    # Добавляем ответ в историю
     history.append({"role": "assistant", "content": answer})
-    
-    # Сохраняем историю
     save_history(user_id, history)
     
     await update.message.reply_text(answer)
 
 async def help_command(update, context):
-    await update.message.reply_text(
-        "/start — перезапустить бота\n"
-        "/help — помощь\n\n"
-        "Просто напиши вопрос, я отвечу как подруга 🤍"
-    )
+    await update.message.reply_text("/start — перезапустить")
 
 def main():
-    # Запускаем веб-сервер
     threading.Thread(target=run_web).start()
-    
-    # Запускаем бота
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("✅ марGO с живыми ответами запущен!")
+    print("✅ марGO запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
