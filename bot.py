@@ -54,9 +54,9 @@ async def generate_image(prompt):
     url = f"https://image.pollinations.ai/prompt/{enhanced.replace(' ', '%20')}?width=1024&height=1024&nologo=true&seed={seed}"
     return url
 
-# ========== ПОГОДА ==========
+# ========== ПОГОДА (ЦЕЛЬСИИ) ==========
 async def get_weather(city):
-    url = f"https://wttr.in/{city}?format=%C+%t&lang=ru"
+    url = f"https://wttr.in/{city}?format=%C+%t&lang=ru&m"
     try:
         async with aiohttp.ClientSession() as s:
             async with s.get(url, timeout=10) as r:
@@ -68,7 +68,7 @@ async def get_weather(city):
         return "❌ Ошибка погоды"
 
 async def get_weather_forecast(city):
-    url = f"https://wttr.in/{city}?format=%C+%t&lang=ru&0-7"
+    url = f"https://wttr.in/{city}?format=%C+%t&lang=ru&m&0-7"
     try:
         async with aiohttp.ClientSession() as s:
             async with s.get(url, timeout=10) as r:
@@ -89,7 +89,6 @@ def get_meme():
     return random.choice(memes)
 
 # ========== ОБРАБОТЧИКИ ==========
-user_states = {}
 waiting_for_image = {}
 waiting_for_city = {}
 
@@ -117,7 +116,6 @@ async def handle_message(update, context):
     user_id = update.effective_user.id
     text = update.message.text
     
-    # Инициализация состояний
     if user_id not in waiting_for_image:
         waiting_for_image[user_id] = False
     if user_id not in waiting_for_city:
