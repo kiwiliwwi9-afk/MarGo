@@ -23,16 +23,16 @@ def health():
 def run_web():
     web_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
 
-# ========== АВТОПИНГ (ЧТОБЫ НЕ ЗАСЫПАЛ) ==========
+# ========== АВТОПИНГ ==========
 def keep_alive():
     url = f"https://{os.environ.get('RENDER_EXTERNAL_URL', 'localhost')}"
     while True:
         try:
             requests.get(url, timeout=10)
             print("✅ Пинг отправлен")
-        except Exception as e:
-            print(f"❌ Ошибка пинга: {e}")
-        time.sleep(240)  # каждые 4 минуты
+        except:
+            pass
+        time.sleep(240)
 
 # ========== БАЗА ДАННЫХ ==========
 conn = sqlite3.connect('margo.db', check_same_thread=False)
@@ -64,14 +64,13 @@ def save_history(user_id, history):
 
 # ========== НАСТРОЙКИ ==========
 TOKEN = os.environ.get("BOT_TOKEN")
-GROQ_KEY = os.environ.get("GROQ_KEY")
+DEEPSEEK_KEY = os.environ.get("DEEPSEEK_KEY")
 OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY")
 
 if not TOKEN:
     raise ValueError("BOT_TOKEN не задан")
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 def get_keyboard():
     buttons = [
@@ -80,26 +79,19 @@ def get_keyboard():
     ]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
-# ========== УМНЫЕ ОТВЕТЫ ==========
-async def ask_groq_with_memory(prompt, history):
-    context = ""
-    if history:
-        context = "Вот что мы уже обсуждали:\n"
-        for msg in history[-8:]:
-            role = "Пользователь" if msg['role'] == 'user' else "марGO"
-            context += f"{role}: {msg['content']}\n"
-        context += "\n"
+# ========== DEEPSEEK (УМНЫЕ ОТВЕТЫ) ==========
+async def ask_deepseek(prompt):
+    if not DEEPSEEK_KEY:
+        return "🔌 DeepSeek не настроен. Добавь ключ в переменные."
     
-    full_prompt = f"""Ты — марGO, умный и дружелюбный помощник. Отвечай понятно, по делу.
-
-{context}Пользователь: {prompt}
-марGO:"""
-    
-    url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"}
+    url = "https://api.deepseek.com/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {DEEPSEEK_KEY}",
+        "Content-Type": "application/json"
+    }
     payload = {
-        "model": "llama-3.3-70b-versatile",
-        "messages": [{"role": "user", "content": full_prompt}],
+        "model": "deepseek-chat",
+        "messages": [{"role": "user", "content": prompt}],
         "max_tokens": 600,
         "temperature": 0.8
     }
@@ -109,12 +101,24 @@ async def ask_groq_with_memory(prompt, history):
                 if r.status == 200:
                     data = await r.json()
                     return data['choices'][0]['message']['content']
-                return f"❌ Ошибка API: {r.status}"
+                return f"❌ Ошибка DeepSeek: {r.status}"
     except Exception as e:
         return f"❌ Ошибка: {str(e)}"
 
-# ========== КАРТИНКИ ==========
-async def generate_image(prompt):
+async def ask_deepseek_with_memory(prompt, history):
+    context = ""
+    if history:
+        context = "История диалога:\n"
+        for msg in history[-8:]:
+            role = "Пользователь" if msg['role'] == 'user' else "марGO"
+            context += f"{role}: {msg['content']}\n"
+        context += "\n"
+    
+    full_prompt = f"{context}Пользователь: {prompt}\nмарGO:"
+    return await ask_deepseek(full_prompt)
+
+# ========== КАРТИНКИ (БЕСПЛАТНО) ==========
+async def generate_image_free(prompt):
     enhanced = f"masterpiece, best quality, {prompt}"
     seed = random.randint(1, 999999)
     return f"https://image.pollinations.ai/prompt/{enhanced.replace(' ', '%20')}?width=1024&height=1024&nologo=true&seed={seed}"
@@ -155,7 +159,7 @@ async def start(update, context):
     waiting_for_city[user_id] = False
     save_history(user_id, [])
     await update.message.reply_text(
-        "🤍 Привет! Я марGO\n\n"
+        "🤍 Привет! Я марGO на DeepSeek\n\n"
         "🎨 Картинка — нажми кнопку\n"
         "🌤️ Погода — нажми кнопку\n"
         "😂 Мем — случайная шутка\n\n"
@@ -176,7 +180,7 @@ async def handle_message(update, context):
 
     if waiting_for_image.get(user_id, False):
         await update.message.reply_text("🎨 Рисую...")
-        img = await generate_image(text)
+        img = await generate_image_free(text)
         await update.message.reply_photo(img, caption=text)
         waiting_for_image[user_id] = False
         return
@@ -209,7 +213,7 @@ async def handle_message(update, context):
         prompt = text[7:].strip()
         if prompt:
             await update.message.reply_text("🎨 Рисую...")
-            img = await generate_image(prompt)
+            img = await generate_image_free(prompt)
             await update.message.reply_photo(img, caption=prompt)
         return
 
@@ -223,25 +227,21 @@ async def handle_message(update, context):
         await update.message.reply_text(get_meme())
         return
 
-    await update.message.reply_text("💭 Думаю...")
+    await update.message.reply_text("💭 Думаю через DeepSeek...")
     history.append({"role": "user", "content": text})
-    answer = await ask_groq_with_memory(text, history)
+    answer = await ask_deepseek_with_memory(text, history)
     history.append({"role": "assistant", "content": answer})
     save_history(user_id, history)
     await update.message.reply_text(answer)
 
 def main():
-    # Запускаем веб-сервер
     threading.Thread(target=run_web, daemon=True).start()
-    
-    # Запускаем автопинг
     threading.Thread(target=keep_alive, daemon=True).start()
     
-    # Запускаем бота
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("✅ марGO с автопингом запущен!")
+    print("✅ марGO на DeepSeek запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
