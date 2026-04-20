@@ -80,7 +80,7 @@ def get_keyboard():
     ]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
-# ========== GIGACHAT ==========
+# ========== GIGACHAT (ОПТИМИЗИРОВАННЫЙ) ==========
 gigachat_token = None
 token_expiry = 0
 
@@ -94,7 +94,7 @@ async def get_gigachat_token():
     data = {"scope": "GIGACHAT_API_PERS", "client_id": GIGACHAT_CLIENT_ID, "client_secret": GIGACHAT_SECRET}
     
     async with aiohttp.ClientSession() as s:
-        async with s.post(url, headers=headers, data=data) as r:
+        async with s.post(url, headers=headers, data=data, timeout=10) as r:
             if r.status == 200:
                 data = await r.json()
                 gigachat_token = data['access_token']
@@ -105,36 +105,41 @@ async def get_gigachat_token():
 async def ask_gigachat(prompt):
     token = await get_gigachat_token()
     if not token:
-        return "❌ Ошибка подключения, попробуй позже"
+        return "❌ Ошибка, попробуй позже"
     
     url = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     payload = {
         "model": "GigaChat",
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.8,
-        "max_tokens": 600
+        "temperature": 0.7,
+        "max_tokens": 400
     }
     try:
         async with aiohttp.ClientSession() as s:
-            async with s.post(url, headers=headers, json=payload, timeout=30) as r:
+            async with s.post(url, headers=headers, json=payload, timeout=20) as r:
                 if r.status == 200:
                     data = await r.json()
                     return data['choices'][0]['message']['content']
                 return "❌ Ошибка, попробуй ещё раз"
+    except asyncio.TimeoutError:
+        return "❌ Превышено время ожидания, попробуй ещё раз"
     except Exception as e:
         return "❌ Ошибка, попробуй позже"
 
 async def ask_gigachat_with_memory(prompt, history):
+    # Быстрая память (последние 4 сообщения)
     context = ""
     if history:
-        context = "Вот что мы уже обсуждали:\n"
-        for msg in history[-8:]:
-            role = "Пользователь" if msg['role'] == 'user' else "марGO"
+        recent = history[-6:]
+        for msg in recent:
+            role = "Пользователь" if msg['role'] == 'user' else "Ты"
             context += f"{role}: {msg['content']}\n"
-        context += "\n"
     
-    full_prompt = f"{context}Пользователь: {prompt}\nОтветь как дружелюбный помощник, по имени марGO, кратко и по делу."
+    full_prompt = f"""{context}
+Пользователь: {prompt}
+Ты — марGO, дружелюбный помощник. Ответь кратко и по делу."""
+    
     return await ask_gigachat(full_prompt)
 
 # ========== КАРТИНКИ ==========
@@ -179,7 +184,7 @@ async def start(update, context):
     waiting_for_city[user_id] = False
     save_history(user_id, [])
     await update.message.reply_text(
-        "🤍 Привет! Я марGO — твой помощник.\n\n"
+        "🤍 Привет! Я марGO.\n\n"
         "🎨 Картинка — нажми кнопку\n"
         "🌤️ Погода — нажми кнопку\n"
         "😂 Мем — случайная шутка\n\n"
@@ -198,6 +203,7 @@ async def handle_message(update, context):
     if user_id not in waiting_for_city:
         waiting_for_city[user_id] = False
 
+    # Режим картинки
     if waiting_for_image.get(user_id, False):
         await update.message.reply_text("🎨 Рисую...")
         img = await generate_image(text)
@@ -205,12 +211,14 @@ async def handle_message(update, context):
         waiting_for_image[user_id] = False
         return
 
+    # Режим погоды
     if waiting_for_city.get(user_id, False):
         weather = await get_weather(text)
         await update.message.reply_text(weather)
         waiting_for_city[user_id] = False
         return
 
+    # Кнопки
     if text == "🎨 Картинка":
         await update.message.reply_text("🖌️ Опиши что нарисовать")
         waiting_for_image[user_id] = True
@@ -229,6 +237,7 @@ async def handle_message(update, context):
         await update.message.reply_text("Кнопки: Картинка, Погода, Мем")
         return
 
+    # Быстрые команды
     if text.lower().startswith("нарисуй"):
         prompt = text[7:].strip()
         if prompt:
@@ -247,6 +256,7 @@ async def handle_message(update, context):
         await update.message.reply_text(get_meme())
         return
 
+    # Умный ответ через GigaChat
     await update.message.reply_text("💭 Думаю...")
     history.append({"role": "user", "content": text})
     answer = await ask_gigachat_with_memory(text, history)
@@ -261,7 +271,7 @@ def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("✅ марGO запущен!")
+    print("✅ марGO на GigaChat запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
