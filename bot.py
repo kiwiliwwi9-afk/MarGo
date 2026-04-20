@@ -80,7 +80,7 @@ def get_keyboard():
     ]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
-# ========== GIGACHAT (ОПТИМИЗИРОВАННЫЙ) ==========
+# ========== GIGACHAT С ОБРАБОТКОЙ ОШИБОК ==========
 gigachat_token = None
 token_expiry = 0
 
@@ -105,7 +105,7 @@ async def get_gigachat_token():
 async def ask_gigachat(prompt):
     token = await get_gigachat_token()
     if not token:
-        return "❌ Ошибка, попробуй позже"
+        return "🔌 Не удалось подключиться, попробуй ещё раз"
     
     url = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
@@ -113,25 +113,28 @@ async def ask_gigachat(prompt):
         "model": "GigaChat",
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.7,
-        "max_tokens": 400
+        "max_tokens": 300
     }
     try:
         async with aiohttp.ClientSession() as s:
-            async with s.post(url, headers=headers, json=payload, timeout=20) as r:
+            async with s.post(url, headers=headers, json=payload, timeout=15) as r:
                 if r.status == 200:
                     data = await r.json()
                     return data['choices'][0]['message']['content']
-                return "❌ Ошибка, попробуй ещё раз"
+                elif r.status == 429:
+                    return "⏳ Слишком много запросов, подожди немного"
+                else:
+                    return "❌ Ошибка, попробуй ещё раз"
     except asyncio.TimeoutError:
-        return "❌ Превышено время ожидания, попробуй ещё раз"
-    except Exception as e:
-        return "❌ Ошибка, попробуй позже"
+        return "⏳ Сервер долго отвечает, попробуй ещё раз"
+    except Exception:
+        return "❌ Не удалось получить ответ, попробуй позже"
 
 async def ask_gigachat_with_memory(prompt, history):
-    # Быстрая память (последние 4 сообщения)
+    # Ограничиваем историю 4 сообщениями для скорости
     context = ""
     if history:
-        recent = history[-6:]
+        recent = history[-4:]
         for msg in recent:
             role = "Пользователь" if msg['role'] == 'user' else "Ты"
             context += f"{role}: {msg['content']}\n"
@@ -184,7 +187,7 @@ async def start(update, context):
     waiting_for_city[user_id] = False
     save_history(user_id, [])
     await update.message.reply_text(
-        "🤍 Привет! Я марGO.\n\n"
+        "🤍 Привет! Я марGO — твой помощник.\n\n"
         "🎨 Картинка — нажми кнопку\n"
         "🌤️ Погода — нажми кнопку\n"
         "😂 Мем — случайная шутка\n\n"
