@@ -5,6 +5,7 @@ import random
 import logging
 import threading
 import time
+import requests
 import sqlite3
 import json
 from datetime import datetime
@@ -27,14 +28,13 @@ def keep_alive():
     url = f"https://{os.environ.get('RENDER_EXTERNAL_URL', 'localhost')}"
     while True:
         try:
-            import requests
             requests.get(url, timeout=10)
             print("✅ Пинг отправлен")
         except Exception as e:
             print(f"❌ Ошибка пинга: {e}")
         time.sleep(240)  # каждые 4 минуты
 
-# ========== БАЗА ДАННЫХ ДЛЯ ПАМЯТИ ==========
+# ========== БАЗА ДАННЫХ ==========
 conn = sqlite3.connect('margo.db', check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('''
@@ -90,14 +90,7 @@ async def ask_groq_with_memory(prompt, history):
             context += f"{role}: {msg['content']}\n"
         context += "\n"
     
-    full_prompt = f"""Ты — марGO, умный и дружелюбный помощник. Общайся естественно, как человек.
-
-Правила:
-- Отвечай понятно и по делу
-- Будь доброжелательной
-- Используй эмодзи только к месту
-- Не будь слишком эмоциональной
-- Учитывай историю разговора
+    full_prompt = f"""Ты — марGO, умный и дружелюбный помощник. Отвечай понятно, по делу.
 
 {context}Пользователь: {prompt}
 марGO:"""
@@ -126,8 +119,10 @@ async def generate_image(prompt):
     seed = random.randint(1, 999999)
     return f"https://image.pollinations.ai/prompt/{enhanced.replace(' ', '%20')}?width=1024&height=1024&nologo=true&seed={seed}"
 
-# ========== ПОГОДА (OpenWeatherMap) ==========
+# ========== ПОГОДА ==========
 async def get_weather(city):
+    if not OPENWEATHER_KEY:
+        return "🔌 Погода не настроена"
     url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={OPENWEATHER_KEY}&units=metric&lang=ru"
     try:
         async with aiohttp.ClientSession() as s:
@@ -135,63 +130,18 @@ async def get_weather(city):
                 if r.status == 200:
                     data = await r.json()
                     temp = round(data['main']['temp'])
-                    feels_like = round(data['main']['feels_like'])
                     description = data['weather'][0]['description']
-                    humidity = data['main']['humidity']
-                    wind = data['wind']['speed']
-                    
-                    icon_map = {
-                        'ясно': '☀️', 'солнечно': '☀️',
-                        'облачно': '☁️', 'пасмурно': '☁️',
-                        'дождь': '🌧️', 'ливень': '🌧️',
-                        'снег': '❄️', 'метель': '❄️',
-                        'гроза': '⛈️', 'туман': '🌫️'
-                    }
-                    icon = '🌡️'
-                    for key, value in icon_map.items():
-                        if key in description.lower():
-                            icon = value
-                            break
-                    
-                    return f"{icon} {city.capitalize()}: {description}, {temp}°C (ощущается как {feels_like}°C)\n💧 Влажность: {humidity}% | 💨 Ветер: {wind} м/с"
-                elif r.status == 404:
-                    return f"❌ Город '{city}' не найден. Попробуй на английском: Moscow, London"
-                else:
-                    return f"❌ Ошибка погоды. Попробуй позже"
-    except Exception as e:
-        return f"❌ Ошибка: {str(e)}"
-
-async def get_weather_forecast(city):
-    url = f"http://api.openweathermap.org/data/2.5/forecast?q={city}&appid={OPENWEATHER_KEY}&units=metric&lang=ru&cnt=8"
-    try:
-        async with aiohttp.ClientSession() as s:
-            async with s.get(url, timeout=10) as r:
-                if r.status == 200:
-                    data = await r.json()
-                    result = f"📅 Прогноз для {city.capitalize()}:\n\n"
-                    days = {}
-                    for item in data['list']:
-                        date = item['dt_txt'].split(' ')[0]
-                        if date not in days:
-                            days[date] = []
-                        days[date].append(item)
-                    
-                    for date, items in list(days.items())[:3]:
-                        day_temps = [i['main']['temp'] for i in items]
-                        avg_temp = round(sum(day_temps) / len(day_temps))
-                        weather_desc = items[0]['weather'][0]['description']
-                        result += f"📅 {date}: {weather_desc}, ~{avg_temp}°C\n"
-                    return result
+                    return f"🌤️ {city.capitalize()}: {description}, {temp}°C"
                 return f"❌ Город '{city}' не найден"
-    except Exception as e:
-        return f"❌ Ошибка: {str(e)}"
+    except:
+        return "❌ Ошибка погоды"
 
 # ========== МЕМЫ ==========
 def get_meme():
     memes = [
         "🐱 Кот: 'Я вас не слышу'",
-        "😂 Программист утром: 'Знаю как исправить!' Вечером: 'Переустановлю завтра'",
-        "🤖 Нейросеть: 'Я умная' Пользователь: '2+2?' Нейросеть: '5'"
+        "😂 Программист: 'Переустановлю завтра'",
+        "🤖 Нейросеть: '2+2=5'"
     ]
     return random.choice(memes)
 
@@ -204,16 +154,13 @@ async def start(update, context):
     waiting_for_image[user_id] = False
     waiting_for_city[user_id] = False
     save_history(user_id, [])
-    
     await update.message.reply_text(
-        "🤍 Привет! Я марGO — твой помощник.\n\n"
+        "🤍 Привет! Я марGO\n\n"
         "🎨 Картинка — нажми кнопку\n"
         "🌤️ Погода — нажми кнопку\n"
         "😂 Мем — случайная шутка\n\n"
-        "Быстрые команды:\n"
-        "• «нарисуй кота»\n"
-        "• «погода в Москве»\n"
-        "• «расскажи шутку»",
+        "«нарисуй кота»\n"
+        "«погода в Москве»",
         reply_markup=get_keyboard()
     )
 
@@ -235,11 +182,7 @@ async def handle_message(update, context):
         return
 
     if waiting_for_city.get(user_id, False):
-        if "на неделю" in text.lower():
-            city = text.lower().replace("на неделю", "").strip()
-            weather = await get_weather_forecast(city)
-        else:
-            weather = await get_weather(text)
+        weather = await get_weather(text)
         await update.message.reply_text(weather)
         waiting_for_city[user_id] = False
         return
@@ -259,13 +202,7 @@ async def handle_message(update, context):
         return
     
     if text == "❓ Помощь":
-        await update.message.reply_text(
-            "Кнопки: Картинка, Погода, Мем\n\n"
-            "Быстрые команды:\n"
-            "• «нарисуй кота»\n"
-            "• «погода в Москве»\n"
-            "• «расскажи шутку»"
-        )
+        await update.message.reply_text("Кнопки: Картинка, Погода, Мем")
         return
 
     if text.lower().startswith("нарисуй"):
@@ -278,32 +215,23 @@ async def handle_message(update, context):
 
     if text.lower().startswith("погода в"):
         city = text[8:].strip()
-        if "на неделю" in city.lower():
-            city = city.replace("на неделю", "").strip()
-            weather = await get_weather_forecast(city)
-        else:
-            weather = await get_weather(city)
+        weather = await get_weather(city)
         await update.message.reply_text(weather)
         return
 
-    if text.lower() in ["шутка", "расскажи шутку", "анекдот"]:
+    if text.lower() in ["шутка", "расскажи шутку"]:
         await update.message.reply_text(get_meme())
         return
 
     await update.message.reply_text("💭 Думаю...")
-    
     history.append({"role": "user", "content": text})
     answer = await ask_groq_with_memory(text, history)
     history.append({"role": "assistant", "content": answer})
     save_history(user_id, history)
-    
     await update.message.reply_text(answer)
 
-async def help_command(update, context):
-    await update.message.reply_text("/start — перезапустить")
-
 def main():
-    # Запускаем веб-сервер для пингов
+    # Запускаем веб-сервер
     threading.Thread(target=run_web, daemon=True).start()
     
     # Запускаем автопинг
@@ -312,7 +240,6 @@ def main():
     # Запускаем бота
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("✅ марGO с автопингом запущен!")
     app.run_polling()
