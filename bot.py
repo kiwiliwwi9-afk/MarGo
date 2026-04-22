@@ -13,7 +13,7 @@ from flask import Flask
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# ------------------- ВЕБ-СЕРВЕР ДЛЯ RENDER -------------------
+# ========== ВЕБ-СЕРВЕР ДЛЯ RENDER ==========
 web_app = Flask(__name__)
 
 @web_app.route('/')
@@ -23,7 +23,7 @@ def health():
 def run_web():
     web_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
 
-# ------------------- АВТОПИНГ (НЕ ДАЁТ ЗАСНУТЬ) -------------------
+# ========== АВТОПИНГ ==========
 def keep_alive():
     url = f"https://{os.environ.get('RENDER_EXTERNAL_URL', 'localhost')}"
     while True:
@@ -34,7 +34,7 @@ def keep_alive():
             pass
         time.sleep(240)
 
-# ------------------- БАЗА ДАННЫХ (ПАМЯТЬ) -------------------
+# ========== БАЗА ДАННЫХ ==========
 conn = sqlite3.connect('margo.db', check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('''
@@ -62,10 +62,9 @@ def save_history(user_id, history):
     ''', (user_id, json.dumps(history), datetime.now()))
     conn.commit()
 
-# ------------------- ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ -------------------
+# ========== НАСТРОЙКИ ==========
 TOKEN = os.environ.get("BOT_TOKEN")
-GIGACHAT_CLIENT_ID = os.environ.get("GIGACHAT_CLIENT_ID")
-GIGACHAT_SECRET = os.environ.get("GIGACHAT_SECRET")
+GROQ_KEY = os.environ.get("GROQ_KEY")
 OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY")
 
 if not TOKEN:
@@ -73,7 +72,7 @@ if not TOKEN:
 
 logging.basicConfig(level=logging.INFO)
 
-# ------------------- КЛАВИАТУРА -------------------
+# ========== КЛАВИАТУРА ==========
 def get_keyboard():
     buttons = [
         [KeyboardButton("🎨 Картинка"), KeyboardButton("🌤️ Погода")],
@@ -81,66 +80,30 @@ def get_keyboard():
     ]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
-# ------------------- GIGACHAT (РАБОЧАЯ ВЕРСИЯ) -------------------
-gigachat_token = None
-token_expiry = 0
+# ========== GROQ (С ФИКСОМ РУССКОГО ЯЗЫКА) ==========
+async def ask_groq(prompt):
+    if not GROQ_KEY:
+        return "🔌 Groq не настроен"
 
-async def get_gigachat_token():
-    global gigachat_token, token_expiry
-    if gigachat_token and time.time() < token_expiry:
-        return gigachat_token
-
-    url = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
-    headers = {"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"}
-    data = {
-        "scope": "GIGACHAT_API_PERS",
-        "client_id": GIGACHAT_CLIENT_ID,
-        "client_secret": GIGACHAT_SECRET
-    }
-
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, headers=headers, data=data, timeout=10) as resp:
-            if resp.status == 200:
-                token_data = await resp.json()
-                gigachat_token = token_data['access_token']
-                token_expiry = time.time() + 3600
-                return gigachat_token
-            return None
-
-async def ask_gigachat(prompt):
-    token = await get_gigachat_token()
-    if not token:
-        return "🔌 Не удалось подключиться, попробуй ещё раз"
-
-    url = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"}
     payload = {
-        "model": "GigaChat",
+        "model": "llama-3.3-70b-versatile",
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.7,
-        "max_tokens": 400
+        "max_tokens": 400,
+        "temperature": 0.7
     }
-
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, json=payload, timeout=20) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
+        async with aiohttp.ClientSession() as s:
+            async with s.post(url, headers=headers, json=payload, timeout=15) as r:
+                if r.status == 200:
+                    data = await r.json()
                     return data['choices'][0]['message']['content']
-                elif resp.status == 429:
-                    return "⏳ Слишком много запросов, подожди немного"
-                else:
-                    return "❌ Ошибка, попробуй ещё раз"
-    except asyncio.TimeoutError:
-        return "⏳ Сервер долго отвечает, попробуй ещё раз"
-    except Exception:
-        return "❌ Не удалось получить ответ, попробуй позже"
+                return f"❌ Ошибка Groq: {r.status}"
+    except Exception as e:
+        return f"❌ Ошибка: {str(e)}"
 
-async def ask_gigachat_with_memory(prompt, history):
-    # Используем последние 4 сообщения для контекста
+async def ask_groq_with_memory(prompt, history):
     context = ""
     if history:
         recent = history[-4:]
@@ -148,29 +111,31 @@ async def ask_gigachat_with_memory(prompt, history):
             role = "Пользователь" if msg['role'] == 'user' else "Ты"
             context += f"{role}: {msg['content']}\n"
 
-    full_prompt = f"""{context}
+    full_prompt = f"""Отвечай ТОЛЬКО на русском языке. Никаких других языков, только русский.
+
+{context}
 Пользователь: {prompt}
-Ты — марGO, дружелюбный помощник. Ответь кратко и по делу."""
+марGO:"""
 
-    return await ask_gigachat(full_prompt)
+    return await ask_groq(full_prompt)
 
-# ------------------- КАРТИНКИ -------------------
+# ========== КАРТИНКИ ==========
 async def generate_image(prompt):
     enhanced = f"masterpiece, best quality, {prompt}"
     seed = random.randint(1, 999999)
     return f"https://image.pollinations.ai/prompt/{enhanced.replace(' ', '%20')}?width=1024&height=1024&nologo=true&seed={seed}"
 
-# ------------------- ПОГОДА -------------------
+# ========== ПОГОДА ==========
 async def get_weather(city):
     if not OPENWEATHER_KEY:
         return "🔌 Погода не настроена"
 
     url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={OPENWEATHER_KEY}&units=metric&lang=ru"
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=10) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
+        async with aiohttp.ClientSession() as s:
+            async with s.get(url, timeout=10) as r:
+                if r.status == 200:
+                    data = await r.json()
                     temp = round(data['main']['temp'])
                     description = data['weather'][0]['description']
                     return f"🌤️ {city.capitalize()}: {description}, {temp}°C"
@@ -178,7 +143,7 @@ async def get_weather(city):
     except:
         return "❌ Ошибка погоды"
 
-# ------------------- МЕМЫ -------------------
+# ========== МЕМЫ ==========
 def get_meme():
     memes = [
         "🐱 Кот: 'Я вас не слышу'",
@@ -187,7 +152,7 @@ def get_meme():
     ]
     return random.choice(memes)
 
-# ------------------- ОБРАБОТЧИКИ СООБЩЕНИЙ -------------------
+# ========== ОБРАБОТЧИКИ ==========
 waiting_for_image = {}
 waiting_for_city = {}
 
@@ -202,8 +167,7 @@ async def start(update, context):
         "🎨 Картинка — нажми кнопку\n"
         "🌤️ Погода — нажми кнопку\n"
         "😂 Мем — случайная шутка\n\n"
-        "«нарисуй кота»\n"
-        "«погода в Москве»",
+        "Или просто задай любой вопрос — я отвечу!",
         reply_markup=get_keyboard()
     )
 
@@ -217,7 +181,7 @@ async def handle_message(update, context):
     if user_id not in waiting_for_city:
         waiting_for_city[user_id] = False
 
-    # 1. Режим ожидания картинки
+    # Режим ожидания картинки
     if waiting_for_image.get(user_id, False):
         await update.message.reply_text("🎨 Рисую...")
         img = await generate_image(text)
@@ -225,14 +189,14 @@ async def handle_message(update, context):
         waiting_for_image[user_id] = False
         return
 
-    # 2. Режим ожидания города
+    # Режим ожидания города
     if waiting_for_city.get(user_id, False):
         weather = await get_weather(text)
         await update.message.reply_text(weather)
         waiting_for_city[user_id] = False
         return
 
-    # 3. Кнопки
+    # Кнопки
     if text == "🎨 Картинка":
         await update.message.reply_text("🖌️ Опиши что нарисовать")
         waiting_for_image[user_id] = True
@@ -248,10 +212,17 @@ async def handle_message(update, context):
         return
 
     if text == "❓ Помощь":
-        await update.message.reply_text("Кнопки: Картинка, Погода, Мем")
+        await update.message.reply_text(
+            "📋 **Что умеет марGO:**\n\n"
+            "• 🎨 Картинка — нажми кнопку и опиши\n"
+            "• 🌤️ Погода — нажми кнопку и напиши город\n"
+            "• 😂 Мем — случайная шутка\n"
+            "• 💬 Любой вопрос — я отвечу через нейросеть",
+            parse_mode="Markdown"
+        )
         return
 
-    # 4. Быстрые команды (без кнопок)
+    # Быстрые команды
     if text.lower().startswith("нарисуй"):
         prompt = text[7:].strip()
         if prompt:
@@ -266,19 +237,19 @@ async def handle_message(update, context):
         await update.message.reply_text(weather)
         return
 
-    if text.lower() in ["шутка", "расскажи шутку"]:
+    if text.lower() in ["шутка", "расскажи шутку", "анекдот"]:
         await update.message.reply_text(get_meme())
         return
 
-    # 5. Умный ответ через GigaChat
+    # Обычный вопрос — через Groq
     await update.message.reply_text("💭 Думаю...")
     history.append({"role": "user", "content": text})
-    answer = await ask_gigachat_with_memory(text, history)
+    answer = await ask_groq_with_memory(text, history)
     history.append({"role": "assistant", "content": answer})
     save_history(user_id, history)
     await update.message.reply_text(answer)
 
-# ------------------- ЗАПУСК -------------------
+# ========== ЗАПУСК ==========
 def main():
     threading.Thread(target=run_web, daemon=True).start()
     threading.Thread(target=keep_alive, daemon=True).start()
@@ -287,7 +258,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("✅ марGO на GigaChat запущен!")
+    print("✅ марGO на Groq запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
