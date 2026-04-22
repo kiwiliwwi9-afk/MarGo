@@ -152,7 +152,7 @@ def get_meme():
     ]
     return random.choice(memes)
 
-# ========== OCR (РАСПОЗНАВАНИЕ ТЕКСТА С ФОТО) ==========
+# ========== OCR.SPACE (УЛУЧШЕННЫЙ) ==========
 async def recognize_text_from_photo(file_path):
     url = "https://api.ocr.space/parse/image"
     with open(file_path, 'rb') as f:
@@ -160,7 +160,10 @@ async def recognize_text_from_photo(file_path):
         data = {
             'language': 'rus',
             'isOverlayRequired': False,
-            'scale': True
+            'scale': True,
+            'OCREngine': 2,          # 2 = более точный движок
+            'detectOrientation': True,
+            'isTable': False
         }
         try:
             async with aiohttp.ClientSession() as s:
@@ -168,11 +171,15 @@ async def recognize_text_from_photo(file_path):
                     if r.status == 200:
                         result = await r.json()
                         if result.get('IsErroredOnProcessing'):
+                            print("OCR ошибка:", result.get('ErrorMessage'))
                             return None
                         if result.get('ParsedResults') and len(result['ParsedResults']) > 0:
-                            return result['ParsedResults'][0]['ParsedText']
+                            text = result['ParsedResults'][0]['ParsedText']
+                            if text and len(text.strip()) > 3:
+                                return text.strip()
                     return None
-        except:
+        except Exception as e:
+            print(f"OCR исключение: {e}")
             return None
 
 # ========== ОБРАБОТЧИКИ ==========
@@ -204,7 +211,7 @@ async def handle_photo(update, context):
     file_path = f"temp_{user_id}.jpg"
     await file.download_to_drive(file_path)
 
-    await update.message.reply_text("📸 Распознаю текст с фото...")
+    await update.message.reply_text("📸 Распознаю текст с фото (улучшенный OCR)...")
 
     recognized_text = await recognize_text_from_photo(file_path)
 
@@ -221,7 +228,15 @@ async def handle_photo(update, context):
         history.append({"role": "assistant", "content": answer})
         save_history(user_id, history)
     else:
-        await update.message.reply_text("❌ Не удалось распознать текст на фото. Попробуй сделать фото чётче или напиши вопрос текстом.")
+        await update.message.reply_text(
+            "❌ Не удалось распознать текст на фото.\n\n"
+            "💡 **Советы:**\n"
+            "• Делай фото чётче\n"
+            "• Текст должен быть горизонтальным\n"
+            "• Используй печатный текст (не рукописный)\n"
+            "• Убедись, что на фото нет лишних объектов\n\n"
+            "Или просто напиши вопрос текстом!"
+        )
 
     os.remove(file_path)
 
@@ -272,7 +287,8 @@ async def handle_message(update, context):
             "• 🌤️ **Погода** — нажми кнопку и напиши город\n"
             "• 😂 **Мем** — случайная шутка\n"
             "• 📸 **Фото с текстом** — отправь фото, я прочитаю\n"
-            "• 💬 **Любой вопрос** — отвечу через Groq",
+            "• 💬 **Любой вопрос** — отвечу через нейросеть\n\n"
+            "💡 **Совет:** Для распознавания текста с фото отправляй чёткие фото с печатным текстом.",
             parse_mode="Markdown"
         )
         return
@@ -314,7 +330,7 @@ def main():
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("✅ марGO с OCR запущен!")
+    print("✅ марGO с улучшенным OCR запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
