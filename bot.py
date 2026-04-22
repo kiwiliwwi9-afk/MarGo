@@ -80,7 +80,7 @@ def get_keyboard():
     ]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
-# ========== GROQ (С ФИКСОМ РУССКОГО ЯЗЫКА) ==========
+# ========== GROQ ==========
 async def ask_groq(prompt):
     if not GROQ_KEY:
         return "🔌 Groq не настроен"
@@ -90,7 +90,7 @@ async def ask_groq(prompt):
     payload = {
         "model": "llama-3.3-70b-versatile",
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 400,
+        "max_tokens": 600,
         "temperature": 0.7
     }
     try:
@@ -152,6 +152,29 @@ def get_meme():
     ]
     return random.choice(memes)
 
+# ========== OCR (РАСПОЗНАВАНИЕ ТЕКСТА С ФОТО) ==========
+async def recognize_text_from_photo(file_path):
+    url = "https://api.ocr.space/parse/image"
+    with open(file_path, 'rb') as f:
+        files = {'file': f}
+        data = {
+            'language': 'rus',
+            'isOverlayRequired': False,
+            'scale': True
+        }
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.post(url, data=data, files=files, timeout=30) as r:
+                    if r.status == 200:
+                        result = await r.json()
+                        if result.get('IsErroredOnProcessing'):
+                            return None
+                        if result.get('ParsedResults') and len(result['ParsedResults']) > 0:
+                            return result['ParsedResults'][0]['ParsedText']
+                    return None
+        except:
+            return None
+
 # ========== ОБРАБОТЧИКИ ==========
 waiting_for_image = {}
 waiting_for_city = {}
@@ -164,12 +187,43 @@ async def start(update, context):
 
     await update.message.reply_text(
         "🤍 Привет! Я марGO — твой помощник.\n\n"
-        "🎨 Картинка — нажми кнопку\n"
-        "🌤️ Погода — нажми кнопку\n"
-        "😂 Мем — случайная шутка\n\n"
-        "Или просто задай любой вопрос — я отвечу!",
+        "🎨 **Картинка** — нажми кнопку и опиши\n"
+        "🌤️ **Погода** — нажми кнопку и напиши город\n"
+        "😂 **Мем** — случайная шутка\n"
+        "📸 **Фото с текстом** — отправь фото, я прочитаю текст и отвечу на вопрос\n\n"
+        "Или просто задай любой вопрос!",
+        parse_mode="Markdown",
         reply_markup=get_keyboard()
     )
+
+async def handle_photo(update, context):
+    user_id = update.effective_user.id
+    photo = update.message.photo[-1]
+    file = await photo.get_file()
+
+    file_path = f"temp_{user_id}.jpg"
+    await file.download_to_drive(file_path)
+
+    await update.message.reply_text("📸 Распознаю текст с фото...")
+
+    recognized_text = await recognize_text_from_photo(file_path)
+
+    if recognized_text and recognized_text.strip():
+        await update.message.reply_text(f"📄 **Распознанный текст:**\n{recognized_text[:1000]}", parse_mode="Markdown")
+
+        await update.message.reply_text("💭 Думаю над ответом...")
+        answer = await ask_groq(f"Вот текст с фото. Ответь на вопрос или реши задачу: {recognized_text}")
+        await update.message.reply_text(answer)
+
+        # Сохраняем в историю
+        history = get_history(user_id)
+        history.append({"role": "user", "content": f"[Фото] {recognized_text[:200]}"})
+        history.append({"role": "assistant", "content": answer})
+        save_history(user_id, history)
+    else:
+        await update.message.reply_text("❌ Не удалось распознать текст на фото. Попробуй сделать фото чётче или напиши вопрос текстом.")
+
+    os.remove(file_path)
 
 async def handle_message(update, context):
     user_id = update.effective_user.id
@@ -214,10 +268,11 @@ async def handle_message(update, context):
     if text == "❓ Помощь":
         await update.message.reply_text(
             "📋 **Что умеет марGO:**\n\n"
-            "• 🎨 Картинка — нажми кнопку и опиши\n"
-            "• 🌤️ Погода — нажми кнопку и напиши город\n"
-            "• 😂 Мем — случайная шутка\n"
-            "• 💬 Любой вопрос — я отвечу через нейросеть",
+            "• 🎨 **Картинка** — нажми кнопку и опиши\n"
+            "• 🌤️ **Погода** — нажми кнопку и напиши город\n"
+            "• 😂 **Мем** — случайная шутка\n"
+            "• 📸 **Фото с текстом** — отправь фото, я прочитаю\n"
+            "• 💬 **Любой вопрос** — отвечу через Groq",
             parse_mode="Markdown"
         )
         return
@@ -241,7 +296,7 @@ async def handle_message(update, context):
         await update.message.reply_text(get_meme())
         return
 
-    # Обычный вопрос — через Groq
+    # Обычный вопрос
     await update.message.reply_text("💭 Думаю...")
     history.append({"role": "user", "content": text})
     answer = await ask_groq_with_memory(text, history)
@@ -256,9 +311,10 @@ def main():
 
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("✅ марGO на Groq запущен!")
+    print("✅ марGO с OCR запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
