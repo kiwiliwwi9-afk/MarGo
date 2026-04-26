@@ -10,6 +10,8 @@ import sqlite3
 import json
 import re
 import feedparser
+import speech_recognition as sr
+from pydub import AudioSegment
 from datetime import datetime, timedelta
 from flask import Flask
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
@@ -478,7 +480,50 @@ async def process_natural_reminder_tomorrow(update, reminder_text, time_str):
             parse_mode="Markdown"
         )
     except:
-        await update.message.reply_text("❌ Ошибка: неправильный формат czasu")
+        await update.message.reply_text("❌ Ошибка: неправильный формат времени")
+
+# ========== РАСПОЗНАВАНИЕ ГОЛОСА ==========
+async def recognize_voice(file_path):
+    """Преобразует голосовое сообщение в текст"""
+    try:
+        # Конвертируем OGG в WAV
+        audio = AudioSegment.from_ogg(file_path)
+        wav_path = file_path.replace('.ogg', '.wav')
+        audio.export(wav_path, format='wav')
+        
+        # Распознаём речь
+        recognizer = sr.Recognizer()
+        with sr.AudioFile(wav_path) as source:
+            audio_data = recognizer.record(source)
+            text = recognizer.recognize_google(audio_data, language='ru-RU')
+        
+        # Удаляем временные файлы
+        os.remove(wav_path)
+        return text
+    except Exception as e:
+        print(f"Ошибка распознавания голоса: {e}")
+        return None
+
+async def handle_voice(update, context):
+    user_id = update.effective_user.id
+    voice = update.message.voice
+    file = await voice.get_file()
+    
+    file_path = f"voice_{user_id}.ogg"
+    await file.download_to_drive(file_path)
+    
+    await update.message.reply_text("🎤 Распознаю голосовое сообщение...")
+    
+    text = await recognize_voice(file_path)
+    os.remove(file_path)
+    
+    if text:
+        await update.message.reply_text(f"📝 **Вы сказали:** {text}", parse_mode="Markdown")
+        # Отправляем распознанный текст в обычный обработчик
+        update.message.text = text
+        await handle_message(update, context)
+    else:
+        await update.message.reply_text("❌ Не удалось распознать голос. Попробуй говорить чётче или отправь текстом.")
 
 # ========== OCR ==========
 async def recognize_text_from_photo(file_path):
@@ -525,7 +570,8 @@ async def start(update, context):
         "😂 **Мем** — случайная шутка\n"
         "⏰ **Напомнить** — просто напиши: «напомни мне купить хлеб в 15:30»\n"
         "📰 **Новости** — последние новости\n"
-        "🎮 **Игры** — dice, coin, quiz, guess\n\n"
+        "🎮 **Игры** — dice, coin, quiz, guess\n"
+        "🎤 **Голос** — отправь голосовое сообщение, я прочитаю\n\n"
         "📋 **Мои напоминания** — посмотреть все\n"
         "🗑️ **Удалить** — `/del_remind 1`\n\n"
         "📸 Отправь фото с текстом — я прочитаю\n"
@@ -652,7 +698,8 @@ async def handle_message(update, context):
             "😂 **Мем** — случайная шутка\n"
             "⏰ **Напомнить** — просто напиши: «напомни мне...»\n"
             "📰 **Новости** — последние новости\n"
-            "🎮 **Игры** — /dice, /coin, /quiz, /guess\n\n"
+            "🎮 **Игры** — /dice, /coin, /quiz, /guess\n"
+            "🎤 **Голос** — отправь голосовое сообщение\n\n"
             "📋 `/my_reminders` — посмотреть напоминания\n"
             "🗑️ `/del_remind 1` — удалить напоминание\n\n"
             "📸 Отправь фото с текстом — я прочитаю\n"
@@ -708,11 +755,12 @@ def main():
     app.add_handler(CommandHandler("quiz", cmd_quiz))
     app.add_handler(CommandHandler("guess", cmd_guess))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.Regex(r'^[1-4]$'), cmd_quiz_answer))
     app.add_handler(MessageHandler(filters.Regex(r'^\d+$'), cmd_guess_answer))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("✅ марGO с новостями и играми запущен!")
+    print("✅ марGO с голосом запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
