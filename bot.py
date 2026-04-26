@@ -9,6 +9,7 @@ import requests
 import sqlite3
 import json
 import re
+import feedparser
 from datetime import datetime, timedelta
 from flask import Flask
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
@@ -106,7 +107,6 @@ def parse_reminder_time(text):
     text = text.lower()
     now = datetime.now()
     
-    # через X минут/часов
     match = re.search(r'через\s+(\d+)\s*(минут|минуты|минуту|час|часов|часа)', text)
     if match:
         amount = int(match.group(1))
@@ -116,7 +116,6 @@ def parse_reminder_time(text):
         else:
             return now + timedelta(minutes=amount)
     
-    # в 15:30
     match = re.search(r'в\s+(\d{1,2}):(\d{2})', text)
     if match:
         hour = int(match.group(1))
@@ -126,7 +125,6 @@ def parse_reminder_time(text):
             remind_time += timedelta(days=1)
         return remind_time
     
-    # завтра в 9:00
     match = re.search(r'завтра\s+в\s+(\d{1,2}):(\d{2})', text)
     if match:
         hour = int(match.group(1))
@@ -182,6 +180,7 @@ def get_keyboard():
     buttons = [
         [KeyboardButton("🎨 Картинка"), KeyboardButton("🌤️ Погода")],
         [KeyboardButton("😂 Мем"), KeyboardButton("⏰ Напомнить")],
+        [KeyboardButton("📰 Новости"), KeyboardButton("🎮 Игры")],
         [KeyboardButton("📋 Мои напоминания"), KeyboardButton("❓ Помощь")]
     ]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
@@ -249,9 +248,112 @@ def get_meme():
     memes = [
         "🐱 Кот: 'Я вас не слышу'",
         "😂 Программист: 'Переустановлю завтра'",
-        "🤖 Нейросеть: '2+2=5'"
+        "🤖 Нейросеть: '2+2=5'",
+        "💡 Лучший способ предсказать будущее — создать его самому"
     ]
     return random.choice(memes)
+
+# ========== НОВОСТИ ==========
+async def cmd_news(update, context):
+    url = "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml"
+    try:
+        feed = feedparser.parse(url)
+        news_list = feed.entries[:5]
+        
+        result = "📰 **Новости дня:**\n\n"
+        for i, entry in enumerate(news_list, 1):
+            title = entry.title[:80]
+            link = entry.link
+            result += f"{i}. [{title}]({link})\n"
+        
+        await update.message.reply_text(result, parse_mode="Markdown", disable_web_page_preview=True)
+    except Exception as e:
+        await update.message.reply_text("❌ Не удалось загрузить новости. Попробуй позже.")
+
+# ========== ИГРЫ ==========
+async def cmd_dice(update, context):
+    value = random.randint(1, 6)
+    dice_faces = ["⚀", "⚁", "⚂", "⚃", "⚄", "⚅"]
+    await update.message.reply_text(f"🎲 Тебе выпало: {dice_faces[value-1]} **{value}**", parse_mode="Markdown")
+
+async def cmd_coin(update, context):
+    result = random.choice(["Орёл", "Решка"])
+    await update.message.reply_text(f"🪙 **{result}**", parse_mode="Markdown")
+
+# Викторина
+quiz_questions = [
+    {"question": "Сколько планет в Солнечной системе?", "options": ["7", "8", "9", "10"], "answer": "8"},
+    {"question": "Какой язык программирования самый популярный?", "options": ["Java", "Python", "C++", "JavaScript"], "answer": "Python"},
+    {"question": "Кто создал Telegram?", "options": ["Илон Маск", "Павел Дуров", "Марк Цукерберг", "Билл Гейтс"], "answer": "Павел Дуров"},
+    {"question": "Что означает 'AI'?", "options": ["Artificial Intelligence", "Автоматическое Интегрирование", "Активное Исследование", "Автономный Инструмент"], "answer": "Artificial Intelligence"},
+    {"question": "Столица Франции?", "options": ["Лондон", "Берлин", "Париж", "Мадрид"], "answer": "Париж"},
+    {"question": "Кто написал 'Войну и мир'?", "options": ["Достоевский", "Толстой", "Чехов", "Пушкин"], "answer": "Толстой"},
+]
+
+user_quiz = {}
+
+async def cmd_quiz(update, context):
+    user_id = update.effective_user.id
+    q = random.choice(quiz_questions)
+    user_quiz[user_id] = {"question": q["question"], "answer": q["answer"], "options": q["options"]}
+    options = "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(q["options"])])
+    await update.message.reply_text(f"❓ **{q['question']}**\n\n{options}\n\n_Ответь номером (1-{len(q['options'])})_", parse_mode="Markdown")
+
+async def cmd_quiz_answer(update, context):
+    user_id = update.effective_user.id
+    if user_id not in user_quiz:
+        await update.message.reply_text("Сначала напиши `/quiz`", parse_mode="Markdown")
+        return
+    
+    try:
+        answer_num = int(update.message.text)
+        q = user_quiz[user_id]
+        options = q["options"]
+        correct = q["answer"]
+        
+        if 1 <= answer_num <= len(options):
+            user_answer = options[answer_num - 1]
+            if user_answer == correct:
+                await update.message.reply_text("✅ **Правильно!** 🎉", parse_mode="Markdown")
+            else:
+                await update.message.reply_text(f"❌ **Неправильно!** Правильный ответ: {correct}", parse_mode="Markdown")
+        else:
+            await update.message.reply_text(f"Введи число от 1 до {len(options)}")
+    except ValueError:
+        await update.message.reply_text("Напиши номер ответа цифрой")
+    
+    del user_quiz[user_id]
+
+# Угадай число
+user_number_game = {}
+
+async def cmd_guess(update, context):
+    user_id = update.effective_user.id
+    number = random.randint(1, 100)
+    user_number_game[user_id] = {"number": number, "attempts": 0}
+    await update.message.reply_text("🔢 Я загадал число от 1 до 100. Попробуй угадать! Напиши число.")
+
+async def cmd_guess_answer(update, context):
+    user_id = update.effective_user.id
+    if user_id not in user_number_game:
+        await update.message.reply_text("Сначала напиши `/guess`", parse_mode="Markdown")
+        return
+    
+    try:
+        guess = int(update.message.text)
+        game = user_number_game[user_id]
+        game["attempts"] += 1
+        number = game["number"]
+        
+        if guess < number:
+            await update.message.reply_text("📈 **Больше!** Попробуй ещё.")
+        elif guess > number:
+            await update.message.reply_text("📉 **Меньше!** Попробуй ещё.")
+        else:
+            await update.message.reply_text(f"🎉 **Поздравляю!** Ты угадал число {number} за {game['attempts']} попыток!")
+            del user_number_game[user_id]
+    except ValueError:
+        await update.message.reply_text("Введи число!")
 
 # ========== НАПОМИНАНИЯ ==========
 async def cmd_remind(update, context):
@@ -376,7 +478,7 @@ async def process_natural_reminder_tomorrow(update, reminder_text, time_str):
             parse_mode="Markdown"
         )
     except:
-        await update.message.reply_text("❌ Ошибка: неправильный формат времени")
+        await update.message.reply_text("❌ Ошибка: неправильный формат czasu")
 
 # ========== OCR ==========
 async def recognize_text_from_photo(file_path):
@@ -421,7 +523,9 @@ async def start(update, context):
         "🎨 **Картинка** — нажми кнопку и опиши\n"
         "🌤️ **Погода** — нажми кнопку и напиши город\n"
         "😂 **Мем** — случайная шутка\n"
-        "⏰ **Напомнить** — просто напиши: «напомни мне купить хлеб в 15:30»\n\n"
+        "⏰ **Напомнить** — просто напиши: «напомни мне купить хлеб в 15:30»\n"
+        "📰 **Новости** — последние новости\n"
+        "🎮 **Игры** — dice, coin, quiz, guess\n\n"
         "📋 **Мои напоминания** — посмотреть все\n"
         "🗑️ **Удалить** — `/del_remind 1`\n\n"
         "📸 Отправь фото с текстом — я прочитаю\n"
@@ -477,41 +581,33 @@ async def handle_message(update, context):
         return
 
     # ===== ЕСТЕСТВЕННЫЕ НАПОМИНАНИЯ =====
-    # напомни мне ... в 15:30
     remind_match = re.search(r'напомни мне\s+(.+?)\s+в\s+(\d{1,2}:\d{2})', text.lower())
     if remind_match:
         await process_natural_reminder(update, remind_match.group(1), remind_match.group(2))
         return
     
-    # напомни ... через X минут
     remind_minutes_match = re.search(r'напомни\s+(.+?)\s+через\s+(\d+)\s*(?:минут|минуты|минуту|час|часа|часов)', text.lower())
     if remind_minutes_match:
         minutes = int(remind_minutes_match.group(2))
-        unit = remind_minutes_match.group(3) if len(remind_minutes_match.groups()) > 2 else ''
-        if 'час' in unit:
-            minutes = minutes * 60
         await process_natural_reminder_minutes(update, remind_minutes_match.group(1), minutes)
         return
     
-    # создай напоминание ... в 15:30
     create_match = re.search(r'создай напоминание\s+(.+?)\s+в\s+(\d{1,2}:\d{2})', text.lower())
     if create_match:
         await process_natural_reminder(update, create_match.group(1), create_match.group(2))
         return
     
-    # напомнить ... завтра в 9:00
     tomorrow_match = re.search(r'напомнить\s+(.+?)\s+завтра\s+в\s+(\d{1,2}:\d{2})', text.lower())
     if tomorrow_match:
         await process_natural_reminder_tomorrow(update, tomorrow_match.group(1), tomorrow_match.group(2))
         return
     
-    # запомни ... в 14:00
     remember_match = re.search(r'запомни\s+(.+?)\s+в\s+(\d{1,2}:\d{2})', text.lower())
     if remember_match:
         await process_natural_reminder(update, remember_match.group(1), remember_match.group(2))
         return
 
-    # Кнопки
+    # ===== КНОПКИ =====
     if text == "🎨 Картинка":
         await update.message.reply_text("🖌️ Опиши что нарисовать")
         waiting_for_image[user_id] = True
@@ -532,6 +628,19 @@ async def handle_message(update, context):
             parse_mode="Markdown"
         )
         return
+    if text == "📰 Новости":
+        await cmd_news(update, context)
+        return
+    if text == "🎮 Игры":
+        await update.message.reply_text(
+            "🎮 **Игры в марGO:**\n\n"
+            "🎲 `/dice` — бросить кубик\n"
+            "🪙 `/coin` — орёл или решка\n"
+            "❓ `/quiz` — викторина\n"
+            "🔢 `/guess` — угадай число",
+            parse_mode="Markdown"
+        )
+        return
     if text == "📋 Мои напоминания":
         await cmd_my_reminders(update, context)
         return
@@ -541,16 +650,18 @@ async def handle_message(update, context):
             "🎨 **Картинка** — нажми кнопку и опиши\n"
             "🌤️ **Погода** — нажми кнопку и напиши город\n"
             "😂 **Мем** — случайная шутка\n"
-            "⏰ **Напомнить** — просто напиши: «напомни мне...»\n\n"
-            "📋 `/my_reminders` — посмотреть все напоминания\n"
-            "🗑️ `/del_remind 1` — удалить\n\n"
+            "⏰ **Напомнить** — просто напиши: «напомни мне...»\n"
+            "📰 **Новости** — последние новости\n"
+            "🎮 **Игры** — /dice, /coin, /quiz, /guess\n\n"
+            "📋 `/my_reminders` — посмотреть напоминания\n"
+            "🗑️ `/del_remind 1` — удалить напоминание\n\n"
             "📸 Отправь фото с текстом — я прочитаю\n"
             "💬 Или просто задай вопрос!",
             parse_mode="Markdown"
         )
         return
 
-    # Быстрые команды
+    # ===== БЫСТРЫЕ КОМАНДЫ =====
     if text.lower().startswith("нарисуй"):
         prompt = text[7:].strip()
         if prompt:
@@ -567,7 +678,7 @@ async def handle_message(update, context):
         await update.message.reply_text(get_meme())
         return
 
-    # Обычный вопрос
+    # ===== ОБЫЧНЫЙ ВОПРОС =====
     await update.message.reply_text("💭 Думаю...")
     history.append({"role": "user", "content": text})
     answer = await ask_groq_with_memory(text, history)
@@ -591,10 +702,17 @@ def main():
     app.add_handler(CommandHandler("remind", cmd_remind))
     app.add_handler(CommandHandler("my_reminders", cmd_my_reminders))
     app.add_handler(CommandHandler("del_remind", cmd_del_remind))
+    app.add_handler(CommandHandler("news", cmd_news))
+    app.add_handler(CommandHandler("dice", cmd_dice))
+    app.add_handler(CommandHandler("coin", cmd_coin))
+    app.add_handler(CommandHandler("quiz", cmd_quiz))
+    app.add_handler(CommandHandler("guess", cmd_guess))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.Regex(r'^[1-4]$'), cmd_quiz_answer))
+    app.add_handler(MessageHandler(filters.Regex(r'^\d+$'), cmd_guess_answer))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("✅ марGO с естественными напоминаниями запущен!")
+    print("✅ марGO с новостями и играми запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
