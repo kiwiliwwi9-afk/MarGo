@@ -14,16 +14,14 @@ from flask import Flask
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# ========== RSS ДЛЯ НОВОСТЕЙ (feedparser не нужен) ==========
+# ========== RSS ДЛЯ НОВОСТЕЙ ==========
 async def fetch_news():
-    """Получение новостей через RSS (без feedparser)"""
     url = "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml"
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=10) as resp:
                 if resp.status == 200:
                     text = await resp.text()
-                    # Простой парсинг RSS
                     import xml.etree.ElementTree as ET
                     root = ET.fromstring(text)
                     items = root.findall('.//item')
@@ -187,6 +185,7 @@ def run_scheduler():
 TOKEN = os.environ.get("BOT_TOKEN")
 GROQ_KEY = os.environ.get("GROQ_KEY")
 OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY")
+WIT_AI_KEY = os.environ.get("WIT_AI_KEY")
 
 if not TOKEN:
     raise ValueError("BOT_TOKEN не задан")
@@ -484,6 +483,57 @@ async def process_natural_reminder_tomorrow(update, reminder_text, time_str):
     except:
         await update.message.reply_text("❌ Неправильный формат времени")
 
+# ========== РАСПОЗНАВАНИЕ ГОЛОСА (Wit.ai) ==========
+async def recognize_speech(file_path):
+    if not WIT_AI_KEY:
+        return None
+    
+    url = "https://api.wit.ai/speech"
+    headers = {
+        "Authorization": f"Bearer {WIT_AI_KEY}",
+        "Content-Type": "audio/ogg"
+    }
+    
+    try:
+        with open(file_path, 'rb') as f:
+            async with aiohttp.ClientSession() as s:
+                async with s.post(url, headers=headers, data=f, timeout=15) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        return data.get('text')
+                    else:
+                        print(f"Wit.ai ошибка: {r.status}")
+                        return None
+    except Exception as e:
+        print(f"Ошибка распознавания: {e}")
+        return None
+
+async def handle_voice(update, context):
+    user_id = update.effective_user.id
+    voice = update.message.voice
+    file = await voice.get_file()
+    file_path = f"temp_voice_{user_id}.ogg"
+    await file.download_to_drive(file_path)
+    
+    await update.message.reply_text("🎤 Распознаю голосовое сообщение...")
+    
+    recognized_text = await recognize_speech(file_path)
+    
+    if recognized_text:
+        await update.message.reply_text(f"📝 **Вы сказали:**\n{recognized_text[:500]}", parse_mode="Markdown")
+        await update.message.reply_text("💭 Думаю над ответом...")
+        answer = await ask_groq(recognized_text)
+        await update.message.reply_text(answer)
+        
+        history = get_user_history(user_id)
+        history.append({"role": "user", "content": f"[Голос] {recognized_text[:200]}"})
+        history.append({"role": "assistant", "content": answer})
+        save_user_history(user_id, history)
+    else:
+        await update.message.reply_text("❌ Не удалось распознать голосовое сообщение. Попробуй отправить текст или фото.")
+    
+    os.remove(file_path)
+
 # ========== OCR ==========
 async def recognize_text_from_photo(file_path):
     url = "https://api.ocr.space/parse/image"
@@ -529,7 +579,8 @@ async def start(update, context):
         "😂 **Мем** — случайная шутка\n"
         "⏰ **Напомнить** — «напомни мне купить хлеб в 15:30»\n"
         "📰 **Новости** — последние новости\n"
-        "🎮 **Игры** — dice, coin, quiz, guess\n\n"
+        "🎮 **Игры** — /dice, /coin, /quiz, /guess\n"
+        "🎤 **Голос** — отправь голосовое сообщение\n\n"
         "📋 **Мои напоминания** — посмотреть все\n"
         "🗑️ **Удалить** — `/del_remind 1`\n\n"
         "📸 **Отправь фото с текстом** — я прочитаю и отвечу\n"
@@ -639,6 +690,7 @@ async def handle_message(update, context):
             "⏰ Напомнить — «напомни мне...»\n"
             "📰 Новости — /news\n"
             "🎮 Игры — /dice, /coin, /quiz, /guess\n"
+            "🎤 Голос — отправь голосовое сообщение\n"
             "📸 Фото — отправь фото с текстом\n"
             "📋 Напоминания — /my_reminders\n"
             "🗑️ Удалить — /del_remind 1",
@@ -692,12 +744,13 @@ def main():
     app.add_handler(CommandHandler("coin", cmd_coin))
     app.add_handler(CommandHandler("quiz", cmd_quiz))
     app.add_handler(CommandHandler("guess", cmd_guess))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.Regex(r'^[1-4]$'), cmd_quiz_answer))
     app.add_handler(MessageHandler(filters.Regex(r'^\d+$'), cmd_guess_answer))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("✅ марGO запущен!")
+    print("✅ марGO с голосом запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
