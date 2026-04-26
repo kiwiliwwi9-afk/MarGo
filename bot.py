@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from flask import Flask
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from pydub import AudioSegment
 
 # ========== RSS ДЛЯ НОВОСТЕЙ ==========
 async def fetch_news():
@@ -483,21 +484,24 @@ async def process_natural_reminder_tomorrow(update, reminder_text, time_str):
     except:
         await update.message.reply_text("❌ Неправильный формат времени")
 
-# ========== РАСПОЗНАВАНИЕ ГОЛОСА (Wit.ai) ==========
+# ========== РАСПОЗНАВАНИЕ ГОЛОСА (Wit.ai + конвертация) ==========
 async def recognize_speech(file_path):
     if not WIT_AI_KEY:
         return None
     
-    url = "https://api.wit.ai/speech"
-    headers = {
-        "Authorization": f"Bearer {WIT_AI_KEY}",
-        "Content-Type": "audio/ogg"
-    }
-    
     try:
-        with open(file_path, 'rb') as f:
+        # Конвертируем ogg в wav
+        audio = AudioSegment.from_ogg(file_path)
+        wav_path = file_path.replace('.ogg', '.wav')
+        audio.export(wav_path, format='wav')
+        
+        url = "https://api.wit.ai/speech"
+        headers = {"Authorization": f"Bearer {WIT_AI_KEY}"}
+        
+        with open(wav_path, 'rb') as f:
             async with aiohttp.ClientSession() as s:
                 async with s.post(url, headers=headers, data=f, timeout=15) as r:
+                    os.remove(wav_path)
                     if r.status == 200:
                         data = await r.json()
                         return data.get('text')
@@ -517,6 +521,11 @@ async def handle_voice(update, context):
     
     await update.message.reply_text("🎤 Распознаю голосовое сообщение...")
     
+    if not WIT_AI_KEY:
+        await update.message.reply_text("❌ Ключ Wit.ai не настроен. Добавь переменную WIT_AI_KEY на Render.")
+        os.remove(file_path)
+        return
+    
     recognized_text = await recognize_speech(file_path)
     
     if recognized_text:
@@ -530,7 +539,7 @@ async def handle_voice(update, context):
         history.append({"role": "assistant", "content": answer})
         save_user_history(user_id, history)
     else:
-        await update.message.reply_text("❌ Не удалось распознать голосовое сообщение. Попробуй отправить текст или фото.")
+        await update.message.reply_text("❌ Не удалось распознать голосовое сообщение.\n\nПроверь:\n• Ключ Wit.ai добавлен на Render\n• В приложении Wit.ai выбран русский язык\n• Голосовое сообщение чёткое")
     
     os.remove(file_path)
 
