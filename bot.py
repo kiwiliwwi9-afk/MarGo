@@ -113,8 +113,9 @@ def get_schedule(user_id, day=None):
         row = cursor.fetchone()
         return row[0] if row else None
     else:
-        cursor.execute("SELECT day, lessons FROM schedule WHERE user_id = ? ORDER BY 
-            CASE day
+        cursor.execute("""
+            SELECT day, lessons FROM schedule WHERE user_id = ? 
+            ORDER BY CASE day
                 WHEN 'понедельник' THEN 1
                 WHEN 'вторник' THEN 2
                 WHEN 'среда' THEN 3
@@ -122,7 +123,8 @@ def get_schedule(user_id, day=None):
                 WHEN 'пятница' THEN 5
                 WHEN 'суббота' THEN 6
                 WHEN 'воскресенье' THEN 7
-            END", (user_id,))
+            END
+        """, (user_id,))
         return cursor.fetchall()
 
 def save_schedule(user_id, day, lessons):
@@ -509,7 +511,6 @@ async def handle_message(update, context):
         waiting_for_city[user_id] = False
         return
 
-    # Кнопки
     if text == "🎨 Картинка":
         await update.message.reply_text("🖌️ Опиши что нарисовать")
         waiting_for_image[user_id] = True
@@ -546,7 +547,6 @@ async def handle_message(update, context):
         )
         return
 
-    # Быстрые команды
     if text.lower().startswith("нарисуй"):
         prompt = text[7:].strip()
         if prompt:
@@ -563,7 +563,6 @@ async def handle_message(update, context):
         await update.message.reply_text(get_meme())
         return
 
-    # Обычный вопрос
     await update.message.reply_text("💭 Думаю...")
     history.append({"role": "user", "content": text})
     answer = await ask_groq_with_memory(text, history)
@@ -586,7 +585,7 @@ def main():
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("✅ марGO с умным расписанием запущен!")
+    print("✅ марGO с расписанием и ДЗ запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
