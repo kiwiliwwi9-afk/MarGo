@@ -48,47 +48,15 @@ cursor.execute('''
 ''')
 
 cursor.execute('''
-    CREATE TABLE IF NOT EXISTS schedule (
+    CREATE TABLE IF NOT EXISTS reminders (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
-        day TEXT,
-        lessons TEXT,
-        UNIQUE(user_id, day)
-    )
-''')
-
-cursor.execute('''
-    CREATE TABLE IF NOT EXISTS homework (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        subject TEXT,
-        task TEXT,
-        deadline TEXT,
+        text TEXT,
+        remind_at TIMESTAMP,
         created_at TIMESTAMP
     )
 ''')
 conn.commit()
-
-# ========== ДНИ НЕДЕЛИ ==========
-DAYS_RU = {
-    'пн': 'понедельник', 'понедельник': 'понедельник',
-    'вт': 'вторник', 'вторник': 'вторник',
-    'ср': 'среда', 'среда': 'среда',
-    'чт': 'четверг', 'четверг': 'четверг',
-    'пт': 'пятница', 'пятница': 'пятница',
-    'сб': 'суббота', 'суббота': 'суббота',
-    'вс': 'воскресенье', 'воскресенье': 'воскресенье',
-    'сегодня': 'сегодня', 'завтра': 'завтра'
-}
-
-WEEKDAYS = ['понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота', 'воскресенье']
-
-def get_weekday_name(day):
-    if day == 'сегодня':
-        return WEEKDAYS[datetime.now().weekday()]
-    elif day == 'завтра':
-        return WEEKDAYS[(datetime.now() + timedelta(days=1)).weekday()]
-    return DAYS_RU.get(day.lower(), None)
 
 # ========== РАБОТА С БАЗОЙ ==========
 def get_user_history(user_id):
@@ -107,54 +75,100 @@ def save_user_history(user_id, history):
     ''', (user_id, json.dumps(history), datetime.now()))
     conn.commit()
 
-def get_schedule(user_id, day=None):
-    if day:
-        cursor.execute("SELECT lessons FROM schedule WHERE user_id = ? AND day = ?", (user_id, day))
-        row = cursor.fetchone()
-        return row[0] if row else None
-    else:
-        cursor.execute("""
-            SELECT day, lessons FROM schedule WHERE user_id = ? 
-            ORDER BY CASE day
-                WHEN 'понедельник' THEN 1
-                WHEN 'вторник' THEN 2
-                WHEN 'среда' THEN 3
-                WHEN 'четверг' THEN 4
-                WHEN 'пятница' THEN 5
-                WHEN 'суббота' THEN 6
-                WHEN 'воскресенье' THEN 7
-            END
-        """, (user_id,))
-        return cursor.fetchall()
-
-def save_schedule(user_id, day, lessons):
+def add_reminder(user_id, text, remind_at):
     cursor.execute('''
-        INSERT OR REPLACE INTO schedule (user_id, day, lessons)
-        VALUES (?, ?, ?)
-    ''', (user_id, day, lessons))
+        INSERT INTO reminders (user_id, text, remind_at, created_at)
+        VALUES (?, ?, ?, ?)
+    ''', (user_id, text, remind_at, datetime.now()))
     conn.commit()
+    return cursor.lastrowid
 
-def delete_schedule_day(user_id, day):
-    cursor.execute("DELETE FROM schedule WHERE user_id = ? AND day = ?", (user_id, day))
-    conn.commit()
-
-def clear_schedule(user_id):
-    cursor.execute("DELETE FROM schedule WHERE user_id = ?", (user_id,))
-    conn.commit()
-
-def get_homework(user_id, subject=None):
-    if subject:
-        cursor.execute("SELECT subject, task, deadline FROM homework WHERE user_id = ? AND subject LIKE ? ORDER BY created_at DESC", (user_id, f'%{subject}%'))
-    else:
-        cursor.execute("SELECT subject, task, deadline FROM homework WHERE user_id = ? ORDER BY created_at DESC", (user_id,))
+def get_active_reminders(user_id):
+    cursor.execute("SELECT id, text, remind_at FROM reminders WHERE user_id = ? AND remind_at > ? ORDER BY remind_at", 
+                   (user_id, datetime.now()))
     return cursor.fetchall()
 
-def add_homework(user_id, subject, task, deadline=None):
-    cursor.execute('''
-        INSERT INTO homework (user_id, subject, task, deadline, created_at)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (user_id, subject, task, deadline, datetime.now()))
+def delete_reminder(reminder_id, user_id):
+    cursor.execute("DELETE FROM reminders WHERE id = ? AND user_id = ?", (reminder_id, user_id))
     conn.commit()
+    return cursor.rowcount > 0
+
+def get_due_reminders():
+    cursor.execute("SELECT id, user_id, text FROM reminders WHERE remind_at <= ?", (datetime.now(),))
+    return cursor.fetchall()
+
+def delete_reminder_by_id(reminder_id):
+    cursor.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
+    conn.commit()
+
+# ========== ПАРСИНГ ВРЕМЕНИ ==========
+def parse_reminder_time(text):
+    text = text.lower()
+    now = datetime.now()
+    
+    # через X минут/часов
+    match = re.search(r'через\s+(\d+)\s*(минут|минуты|минуту|час|часов|часа)', text)
+    if match:
+        amount = int(match.group(1))
+        unit = match.group(2)
+        if 'час' in unit:
+            return now + timedelta(hours=amount)
+        else:
+            return now + timedelta(minutes=amount)
+    
+    # в 15:30
+    match = re.search(r'в\s+(\d{1,2}):(\d{2})', text)
+    if match:
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+        remind_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if remind_time <= now:
+            remind_time += timedelta(days=1)
+        return remind_time
+    
+    # завтра в 9:00
+    match = re.search(r'завтра\s+в\s+(\d{1,2}):(\d{2})', text)
+    if match:
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+        remind_time = (now + timedelta(days=1)).replace(hour=hour, minute=minute, second=0, microsecond=0)
+        return remind_time
+    
+    return None
+
+# ========== ПЛАНИРОВЩИК НАПОМИНАНИЙ ==========
+reminder_running = False
+
+def check_and_send_reminders():
+    """Проверяет и отправляет просроченные напоминания"""
+    due_reminders = get_due_reminders()
+    
+    for reminder_id, user_id, text in due_reminders:
+        try:
+            asyncio.run_coroutine_threadsafe(
+                application.bot.send_message(
+                    chat_id=user_id, 
+                    text=f"⏰ **Напоминание!**\n\n{text}",
+                    parse_mode="Markdown"
+                ),
+                loop
+            )
+            print(f"✅ Напоминание {reminder_id} отправлено пользователю {user_id}")
+        except Exception as e:
+            print(f"❌ Ошибка отправки напоминания {reminder_id}: {e}")
+        
+        # Удаляем отправленное напоминание
+        delete_reminder_by_id(reminder_id)
+
+def run_scheduler():
+    global reminder_running
+    if reminder_running:
+        return
+    reminder_running = True
+    
+    while True:
+        check_and_send_reminders()
+        time.sleep(30)  # проверяем каждые 30 секунд
 
 # ========== GROQ ==========
 TOKEN = os.environ.get("BOT_TOKEN")
@@ -166,11 +180,14 @@ if not TOKEN:
 
 logging.basicConfig(level=logging.INFO)
 
+global application
+global loop
+
 def get_keyboard():
     buttons = [
         [KeyboardButton("🎨 Картинка"), KeyboardButton("🌤️ Погода")],
-        [KeyboardButton("😂 Мем"), KeyboardButton("📅 Расписание")],
-        [KeyboardButton("📚 ДЗ"), KeyboardButton("❓ Помощь")]
+        [KeyboardButton("😂 Мем"), KeyboardButton("⏰ Напомнить")],
+        [KeyboardButton("📋 Мои напоминания"), KeyboardButton("❓ Помощь")]
     ]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
@@ -237,174 +254,92 @@ def get_meme():
     memes = [
         "🐱 Кот: 'Я вас не слышу'",
         "😂 Программист: 'Переустановлю завтра'",
-        "🤖 Нейросеть: '2+2=5'"
+        "🤖 Нейросеть: '2+2=5'",
+        "💡 Лучший способ предсказать будущее — создать его самому",
+        "🎨 марGO рисует, напоминает, отвечает — всё в одном!"
     ]
     return random.choice(memes)
 
-# ========== ОБРАБОТКА ВВОДА РАСПИСАНИЯ ==========
-async def process_schedule_input(update, context, text):
+# ========== НАПОМИНАНИЯ ==========
+async def cmd_remind(update, context):
     user_id = update.effective_user.id
-    lines = text.strip().split('\n')
-    saved = 0
-    
-    for line in lines:
-        if ':' not in line:
-            continue
-        day, lessons = line.split(':', 1)
-        day = day.strip().lower()
-        lessons = lessons.strip()
-        target_day = get_weekday_name(day)
-        if target_day:
-            save_schedule(user_id, target_day, lessons)
-            saved += 1
-    
-    if saved > 0:
-        await update.message.reply_text(f"✅ Сохранено расписание на {saved} дней!")
-        context.user_data['waiting_for_schedule'] = False
-    else:
-        await update.message.reply_text(
-            "❌ Не удалось распознать формат.\n"
-            "Используй:\n`понедельник: математика, русский`\n`вторник: литература, история`",
-            parse_mode="Markdown"
-        )
-
-# ========== КОМАНДЫ РАСПИСАНИЯ ==========
-async def cmd_schedule(update, context):
-    user_id = update.effective_user.id
-    
-    if context.user_data.get('waiting_for_schedule'):
-        text = update.message.text
-        await process_schedule_input(update, context, text)
-        return
-    
-    schedule = get_schedule(user_id)
-    
-    if not schedule:
-        await update.message.reply_text(
-            "📭 **У тебя пока нет расписания.**\n\n"
-            "Отправь расписание в формате:\n"
-            "`понедельник: математика, русский, физика`\n"
-            "`вторник: литература, история, английский`\n\n"
-            "Каждый день с новой строки.\n"
-            "Или используй `/set_schedule день: уроки` для одного дня.",
-            parse_mode="Markdown"
-        )
-        context.user_data['waiting_for_schedule'] = True
-        return
-    
-    result = "📅 **Твоё расписание на неделю:**\n\n"
-    for day, lessons in schedule:
-        result += f"**{day.capitalize()}:** {lessons}\n\n"
-    await update.message.reply_text(result, parse_mode="Markdown")
-
-async def cmd_set_schedule(update, context):
-    user_id = update.effective_user.id
-    text = update.message.text.replace('/set_schedule', '').strip()
-    
-    if ':' not in text:
-        await update.message.reply_text(
-            "📝 Формат: `/set_schedule понедельник: математика, русский, физика`",
-            parse_mode="Markdown"
-        )
-        return
-    
-    day, lessons = text.split(':', 1)
-    day = day.strip().lower()
-    lessons = lessons.strip()
-    target_day = get_weekday_name(day)
-    
-    if not target_day:
-        await update.message.reply_text("❌ Неправильный день")
-        return
-    
-    save_schedule(user_id, target_day, lessons)
-    await update.message.reply_text(f"✅ Расписание на **{target_day.capitalize()}** сохранено!", parse_mode="Markdown")
-
-async def cmd_edit_schedule(update, context):
-    user_id = update.effective_user.id
-    text = update.message.text.replace('/edit_schedule', '').strip()
+    text = update.message.text.replace('/remind', '').strip()
     
     if not text:
         await update.message.reply_text(
-            "📝 **Редактирование расписания:**\n\n"
-            "`/edit_schedule понедельник: математика, русский` — изменить день\n"
-            "`/edit_schedule удалить понедельник` — удалить день\n"
-            "`/edit_schedule очистить` — удалить всё расписание",
+            "⏰ **Как создать напоминание:**\n\n"
+            "• `/remind позвонить маме через 10 минут`\n"
+            "• `/remind купить хлеб в 15:30`\n"
+            "• `/remind сдать проект завтра в 9:00`\n\n"
+            "📋 `/my_reminders` — посмотреть все напоминания\n"
+            "🗑️ `/del_remind 1` — удалить напоминание по номеру",
             parse_mode="Markdown"
         )
         return
     
-    if ':' in text:
-        day, lessons = text.split(':', 1)
-        day = day.strip().lower()
-        lessons = lessons.strip()
-        target_day = get_weekday_name(day)
-        if target_day:
-            save_schedule(user_id, target_day, lessons)
-            await update.message.reply_text(f"✅ Расписание на **{target_day.capitalize()}** обновлено!", parse_mode="Markdown")
-        else:
-            await update.message.reply_text("❌ Неправильный день")
-    elif 'удалить' in text.lower():
-        day = text.lower().replace('удалить', '').strip()
-        target_day = get_weekday_name(day)
-        if target_day:
-            delete_schedule_day(user_id, target_day)
-            await update.message.reply_text(f"✅ Расписание на **{target_day.capitalize()}** удалено!", parse_mode="Markdown")
-        else:
-            await update.message.reply_text("❌ Неправильный день")
-    elif 'очистить' in text.lower():
-        clear_schedule(user_id)
-        await update.message.reply_text("✅ Всё расписание удалено!")
-
-# ========== ДОМАШНЕЕ ЗАДАНИЕ ==========
-async def cmd_homework(update, context):
-    user_id = update.effective_user.id
-    
-    if context.args:
-        subject = ' '.join(context.args).lower()
-        hw_list = get_homework(user_id, subject)
-        if hw_list:
-            result = f"📚 **ДЗ по {subject.capitalize()}:**\n"
-            for subj, task, deadline in hw_list[:5]:
-                result += f"• {task}\n"
-            await update.message.reply_text(result, parse_mode="Markdown")
-        else:
-            await update.message.reply_text(f"📭 Нет домашнего задания по {subject}")
+    remind_time = parse_reminder_time(text)
+    if not remind_time:
+        await update.message.reply_text(
+            "❌ Не понял время. Используй формат:\n"
+            "• `через 10 минут`\n"
+            "• `в 15:30`\n"
+            "• `завтра в 9:00`",
+            parse_mode="Markdown"
+        )
         return
     
-    hw_list = get_homework(user_id)
-    if hw_list:
-        result = "📚 **Твои домашние задания:**\n"
-        for subj, task, deadline in hw_list[:10]:
-            result += f"• **{subj}**: {task}\n"
-        await update.message.reply_text(result, parse_mode="Markdown")
-    else:
-        await update.message.reply_text("📭 У тебя пока нет домашнего задания. Добавь через `/hw_add математика: решить №5`", parse_mode="Markdown")
-
-async def cmd_homework_add(update, context):
-    user_id = update.effective_user.id
-    text = update.message.text.replace('/hw_add', '').strip()
+    # Извлекаем текст напоминания (без указания времени)
+    reminder_text = text
+    # Убираем временные фразы
+    for phrase in ['через \d+ минут', 'через \d+ минуты', 'через \d+ час', 'в \d{1,2}:\d{2}', 'завтра в \d{1,2}:\d{2}']:
+        reminder_text = re.sub(phrase, '', reminder_text).strip()
     
-    if ':' not in text:
-        await update.message.reply_text("❌ Формат: `/hw_add математика: решить №5 стр 12`", parse_mode="Markdown")
+    if not reminder_text:
+        reminder_text = "Напоминание"
+    
+    reminder_id = add_reminder(user_id, reminder_text, remind_time)
+    
+    time_str = remind_time.strftime("%d.%m.%Y в %H:%M")
+    await update.message.reply_text(
+        f"✅ **Напоминание создано!**\n\n"
+        f"📝 {reminder_text}\n"
+        f"⏰ {time_str}\n\n"
+        f"ID: {reminder_id}\n"
+        f"Используй `/del_remind {reminder_id}` чтобы удалить",
+        parse_mode="Markdown"
+    )
+
+async def cmd_my_reminders(update, context):
+    user_id = update.effective_user.id
+    reminders = get_active_reminders(user_id)
+    
+    if not reminders:
+        await update.message.reply_text("📭 У тебя нет активных напоминаний.\n\nСоздай через `/remind`", parse_mode="Markdown")
         return
     
-    subject, task = text.split(':', 1)
-    subject = subject.strip()
-    task = task.strip()
+    result = "⏰ **Твои напоминания:**\n\n"
+    for rid, text, remind_at in reminders:
+        time_str = remind_at.strftime("%d.%m.%Y в %H:%M")
+        result += f"**{rid}.** {text}\n   📅 {time_str}\n\n"
     
-    deadline = None
-    deadline_match = re.search(r'\[(.*?)\]', task)
-    if deadline_match:
-        deadline = deadline_match.group(1)
-        task = task.replace(f'[{deadline}]', '').strip()
+    result += "🗑️ Удалить: `/del_remind [номер]`"
+    await update.message.reply_text(result, parse_mode="Markdown")
+
+async def cmd_del_remind(update, context):
+    user_id = update.effective_user.id
     
-    add_homework(user_id, subject, task, deadline)
+    if not context.args:
+        await update.message.reply_text("❌ Укажи ID напоминания: `/del_remind 1`", parse_mode="Markdown")
+        return
     
-    response = f"✅ Добавлено ДЗ по **{subject}**: {task}"
-    if deadline:
-        response += f"\n📅 Дедлайн: {deadline}"
-    await update.message.reply_text(response, parse_mode="Markdown")
+    try:
+        reminder_id = int(context.args[0])
+        if delete_reminder(reminder_id, user_id):
+            await update.message.reply_text(f"✅ Напоминание {reminder_id} удалено!", parse_mode="Markdown")
+        else:
+            await update.message.reply_text(f"❌ Напоминание {reminder_id} не найдено", parse_mode="Markdown")
+    except ValueError:
+        await update.message.reply_text("❌ ID должен быть числом", parse_mode="Markdown")
 
 # ========== OCR ==========
 async def recognize_text_from_photo(file_path):
@@ -442,7 +377,6 @@ async def start(update, context):
     user_id = update.effective_user.id
     waiting_for_image[user_id] = False
     waiting_for_city[user_id] = False
-    context.user_data['waiting_for_schedule'] = False
     save_user_history(user_id, [])
 
     await update.message.reply_text(
@@ -450,13 +384,9 @@ async def start(update, context):
         "🎨 **Картинка** — нажми кнопку и опиши\n"
         "🌤️ **Погода** — нажми кнопку и напиши город\n"
         "😂 **Мем** — случайная шутка\n"
-        "📅 **Расписание** — нажми кнопку, добавь или посмотри\n"
-        "📚 **ДЗ** — нажми кнопку, добавь или посмотри\n\n"
-        "**Команды:**\n"
-        "• `/set_schedule понедельник: математика, русский`\n"
-        "• `/edit_schedule` — редактировать расписание\n"
-        "• `/hw_add математика: решить №5`\n"
-        "• `/hw` — показать ДЗ\n\n"
+        "⏰ **Напомнить** — нажми кнопку или `/remind текст через 10 минут`\n\n"
+        "📋 **Мои напоминания** — посмотреть все\n"
+        "🗑️ **Удалить** — `/del_remind 1`\n\n"
         "📸 Отправь фото с текстом — я прочитаю\n"
         "💬 Или просто задай вопрос!",
         parse_mode="Markdown",
@@ -488,6 +418,22 @@ async def handle_photo(update, context):
     
     os.remove(file_path)
 
+async def handle_remind_button(update, context):
+    """Обработка кнопки Напомнить"""
+    await update.message.reply_text(
+        "⏰ **Создать напоминание**\n\n"
+        "Отправь сообщение в формате:\n"
+        "• `позвонить маме через 10 минут`\n"
+        "• `купить хлеб в 15:30`\n"
+        "• `сдать проект завтра в 9:00`\n\n"
+        "Или используй команду `/remind`",
+        parse_mode="Markdown"
+    )
+
+async def handle_my_reminders_button(update, context):
+    """Обработка кнопки Мои напоминания"""
+    await cmd_my_reminders(update, context)
+
 async def handle_message(update, context):
     user_id = update.effective_user.id
     text = update.message.text
@@ -498,6 +444,7 @@ async def handle_message(update, context):
     if user_id not in waiting_for_city:
         waiting_for_city[user_id] = False
 
+    # Режим ожидания картинки
     if waiting_for_image.get(user_id, False):
         await update.message.reply_text("🎨 Рисую...")
         img = await generate_image(text)
@@ -505,48 +452,51 @@ async def handle_message(update, context):
         waiting_for_image[user_id] = False
         return
 
+    # Режим ожидания города
     if waiting_for_city.get(user_id, False):
         weather = await get_weather(text)
         await update.message.reply_text(weather)
         waiting_for_city[user_id] = False
         return
 
+    # Кнопки
     if text == "🎨 Картинка":
-        await update.message.reply_text("🖌️ Опиши что нарисовать")
+        await update.message.reply_text("🖌️ Опиши что нарисовать (например: «кота в космосе»)")
         waiting_for_image[user_id] = True
         return
     if text == "🌤️ Погода":
-        await update.message.reply_text("🏙️ Напиши город")
+        await update.message.reply_text("🏙️ Напиши город (например: «Москва»)")
         waiting_for_city[user_id] = True
         return
     if text == "😂 Мем":
         await update.message.reply_text(get_meme())
         return
-    if text == "📅 Расписание":
-        await cmd_schedule(update, context)
+    if text == "⏰ Напомнить":
+        await handle_remind_button(update, context)
         return
-    if text == "📚 ДЗ":
-        await cmd_homework(update, context)
+    if text == "📋 Мои напоминания":
+        await cmd_my_reminders(update, context)
         return
     if text == "❓ Помощь":
         await update.message.reply_text(
-            "📋 **Команды:**\n\n"
-            "📅 **Расписание:**\n"
-            "• /schedule — показать всё расписание\n"
-            "• /set_schedule день: уроки — добавить день\n"
-            "• /edit_schedule — редактировать\n\n"
-            "📚 **ДЗ:**\n"
-            "• /hw_add предмет: задача — добавить\n"
-            "• /hw — показать всё ДЗ\n\n"
-            "🎨 **Картинка:** нажми кнопку или «нарисуй кота»\n"
-            "🌤️ **Погода:** нажми кнопку или «погода в Москве»\n"
-            "😂 **Мем:** «расскажи шутку»\n"
-            "📸 **Фото:** отправь фото с текстом\n"
-            "💬 **Вопрос:** просто напиши",
+            "📋 **Что умеет марGO:**\n\n"
+            "🎨 **Картинка** — нажми кнопку и опиши\n"
+            "🌤️ **Погода** — нажми кнопку и напиши город\n"
+            "😂 **Мем** — случайная шутка\n"
+            "⏰ **Напомнить** — напоминания по времени\n\n"
+            "**Команды напоминаний:**\n"
+            "• `/remind текст через 10 минут`\n"
+            "• `/remind текст в 15:30`\n"
+            "• `/remind текст завтра в 9:00`\n"
+            "• `/my_reminders` — посмотреть все\n"
+            "• `/del_remind 1` — удалить\n\n"
+            "📸 Отправь фото с текстом — я прочитаю\n"
+            "💬 Или просто задай вопрос!",
             parse_mode="Markdown"
         )
         return
 
+    # Быстрые команды
     if text.lower().startswith("нарисуй"):
         prompt = text[7:].strip()
         if prompt:
@@ -563,6 +513,7 @@ async def handle_message(update, context):
         await update.message.reply_text(get_meme())
         return
 
+    # Обычный вопрос
     await update.message.reply_text("💭 Думаю...")
     history.append({"role": "user", "content": text})
     answer = await ask_groq_with_memory(text, history)
@@ -572,20 +523,24 @@ async def handle_message(update, context):
 
 # ========== ЗАПУСК ==========
 def main():
+    global application, loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
     threading.Thread(target=run_web, daemon=True).start()
     threading.Thread(target=keep_alive, daemon=True).start()
+    threading.Thread(target=run_scheduler, daemon=True).start()
 
     app = Application.builder().token(TOKEN).build()
+    application = app
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("schedule", cmd_schedule))
-    app.add_handler(CommandHandler("set_schedule", cmd_set_schedule))
-    app.add_handler(CommandHandler("edit_schedule", cmd_edit_schedule))
-    app.add_handler(CommandHandler("hw", cmd_homework))
-    app.add_handler(CommandHandler("hw_add", cmd_homework_add))
+    app.add_handler(CommandHandler("remind", cmd_remind))
+    app.add_handler(CommandHandler("my_reminders", cmd_my_reminders))
+    app.add_handler(CommandHandler("del_remind", cmd_del_remind))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("✅ марGO с расписанием и ДЗ запущен!")
+    print("✅ марGO с напоминаниями запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
