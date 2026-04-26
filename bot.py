@@ -140,9 +140,7 @@ def parse_reminder_time(text):
 reminder_running = False
 
 def check_and_send_reminders():
-    """Проверяет и отправляет просроченные напоминания"""
     due_reminders = get_due_reminders()
-    
     for reminder_id, user_id, text in due_reminders:
         try:
             asyncio.run_coroutine_threadsafe(
@@ -156,8 +154,6 @@ def check_and_send_reminders():
             print(f"✅ Напоминание {reminder_id} отправлено пользователю {user_id}")
         except Exception as e:
             print(f"❌ Ошибка отправки напоминания {reminder_id}: {e}")
-        
-        # Удаляем отправленное напоминание
         delete_reminder_by_id(reminder_id)
 
 def run_scheduler():
@@ -165,10 +161,9 @@ def run_scheduler():
     if reminder_running:
         return
     reminder_running = True
-    
     while True:
         check_and_send_reminders()
-        time.sleep(30)  # проверяем каждые 30 секунд
+        time.sleep(30)
 
 # ========== GROQ ==========
 TOKEN = os.environ.get("BOT_TOKEN")
@@ -254,9 +249,7 @@ def get_meme():
     memes = [
         "🐱 Кот: 'Я вас не слышу'",
         "😂 Программист: 'Переустановлю завтра'",
-        "🤖 Нейросеть: '2+2=5'",
-        "💡 Лучший способ предсказать будущее — создать его самому",
-        "🎨 марGO рисует, напоминает, отвечает — всё в одном!"
+        "🤖 Нейросеть: '2+2=5'"
     ]
     return random.choice(memes)
 
@@ -271,8 +264,7 @@ async def cmd_remind(update, context):
             "• `/remind позвонить маме через 10 минут`\n"
             "• `/remind купить хлеб в 15:30`\n"
             "• `/remind сдать проект завтра в 9:00`\n\n"
-            "📋 `/my_reminders` — посмотреть все напоминания\n"
-            "🗑️ `/del_remind 1` — удалить напоминание по номеру",
+            "Или просто напиши: «напомни мне купить хлеб в 15:30»",
             parse_mode="Markdown"
         )
         return
@@ -288,24 +280,19 @@ async def cmd_remind(update, context):
         )
         return
     
-    # Извлекаем текст напоминания (без указания времени)
     reminder_text = text
-    # Убираем временные фразы
     for phrase in ['через \d+ минут', 'через \d+ минуты', 'через \d+ час', 'в \d{1,2}:\d{2}', 'завтра в \d{1,2}:\d{2}']:
         reminder_text = re.sub(phrase, '', reminder_text).strip()
-    
     if not reminder_text:
         reminder_text = "Напоминание"
     
     reminder_id = add_reminder(user_id, reminder_text, remind_time)
-    
     time_str = remind_time.strftime("%d.%m.%Y в %H:%M")
     await update.message.reply_text(
         f"✅ **Напоминание создано!**\n\n"
         f"📝 {reminder_text}\n"
         f"⏰ {time_str}\n\n"
-        f"ID: {reminder_id}\n"
-        f"Используй `/del_remind {reminder_id}` чтобы удалить",
+        f"ID: {reminder_id}",
         parse_mode="Markdown"
     )
 
@@ -314,24 +301,21 @@ async def cmd_my_reminders(update, context):
     reminders = get_active_reminders(user_id)
     
     if not reminders:
-        await update.message.reply_text("📭 У тебя нет активных напоминаний.\n\nСоздай через `/remind`", parse_mode="Markdown")
+        await update.message.reply_text("📭 У тебя нет активных напоминаний.", parse_mode="Markdown")
         return
     
     result = "⏰ **Твои напоминания:**\n\n"
     for rid, text, remind_at in reminders:
         time_str = remind_at.strftime("%d.%m.%Y в %H:%M")
         result += f"**{rid}.** {text}\n   📅 {time_str}\n\n"
-    
     result += "🗑️ Удалить: `/del_remind [номер]`"
     await update.message.reply_text(result, parse_mode="Markdown")
 
 async def cmd_del_remind(update, context):
     user_id = update.effective_user.id
-    
     if not context.args:
         await update.message.reply_text("❌ Укажи ID напоминания: `/del_remind 1`", parse_mode="Markdown")
         return
-    
     try:
         reminder_id = int(context.args[0])
         if delete_reminder(reminder_id, user_id):
@@ -340,6 +324,59 @@ async def cmd_del_remind(update, context):
             await update.message.reply_text(f"❌ Напоминание {reminder_id} не найдено", parse_mode="Markdown")
     except ValueError:
         await update.message.reply_text("❌ ID должен быть числом", parse_mode="Markdown")
+
+# ========== ЕСТЕСТВЕННЫЕ НАПОМИНАНИЯ ==========
+async def process_natural_reminder(update, reminder_text, time_str):
+    try:
+        hour, minute = map(int, time_str.split(':'))
+        now = datetime.now()
+        remind_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if remind_time <= now:
+            remind_time += timedelta(days=1)
+        
+        user_id = update.effective_user.id
+        reminder_id = add_reminder(user_id, reminder_text, remind_time)
+        time_str_full = remind_time.strftime("%d.%m.%Y в %H:%M")
+        await update.message.reply_text(
+            f"✅ **Напоминание создано!**\n\n"
+            f"📝 {reminder_text}\n"
+            f"⏰ {time_str_full}\n\n"
+            f"ID: {reminder_id}",
+            parse_mode="Markdown"
+        )
+    except:
+        await update.message.reply_text("❌ Ошибка: неправильный формат времени. Используй например: «в 15:30»")
+
+async def process_natural_reminder_minutes(update, reminder_text, minutes):
+    user_id = update.effective_user.id
+    remind_time = datetime.now() + timedelta(minutes=minutes)
+    reminder_id = add_reminder(user_id, reminder_text, remind_time)
+    time_str_full = remind_time.strftime("%d.%m.%Y в %H:%M")
+    await update.message.reply_text(
+        f"✅ **Напоминание создано!**\n\n"
+        f"📝 {reminder_text}\n"
+        f"⏰ Через {minutes} минут (в {time_str_full})\n\n"
+        f"ID: {reminder_id}",
+        parse_mode="Markdown"
+    )
+
+async def process_natural_reminder_tomorrow(update, reminder_text, time_str):
+    try:
+        hour, minute = map(int, time_str.split(':'))
+        remind_time = datetime.now() + timedelta(days=1)
+        remind_time = remind_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        user_id = update.effective_user.id
+        reminder_id = add_reminder(user_id, reminder_text, remind_time)
+        time_str_full = remind_time.strftime("%d.%m.%Y в %H:%M")
+        await update.message.reply_text(
+            f"✅ **Напоминание создано!**\n\n"
+            f"📝 {reminder_text}\n"
+            f"⏰ {time_str_full}\n\n"
+            f"ID: {reminder_id}",
+            parse_mode="Markdown"
+        )
+    except:
+        await update.message.reply_text("❌ Ошибка: неправильный формат времени")
 
 # ========== OCR ==========
 async def recognize_text_from_photo(file_path):
@@ -384,7 +421,7 @@ async def start(update, context):
         "🎨 **Картинка** — нажми кнопку и опиши\n"
         "🌤️ **Погода** — нажми кнопку и напиши город\n"
         "😂 **Мем** — случайная шутка\n"
-        "⏰ **Напомнить** — нажми кнопку или `/remind текст через 10 минут`\n\n"
+        "⏰ **Напомнить** — просто напиши: «напомни мне купить хлеб в 15:30»\n\n"
         "📋 **Мои напоминания** — посмотреть все\n"
         "🗑️ **Удалить** — `/del_remind 1`\n\n"
         "📸 Отправь фото с текстом — я прочитаю\n"
@@ -408,31 +445,13 @@ async def handle_photo(update, context):
         await update.message.reply_text("💭 Думаю над ответом...")
         answer = await ask_groq(f"Вот текст с фото. Ответь на вопрос или реши задачу: {recognized_text}")
         await update.message.reply_text(answer)
-        
         history = get_user_history(user_id)
         history.append({"role": "user", "content": f"[Фото] {recognized_text[:200]}"})
         history.append({"role": "assistant", "content": answer})
         save_user_history(user_id, history)
     else:
-        await update.message.reply_text("❌ Не удалось распознать текст на фото. Попробуй сделать фото чётче.")
-    
+        await update.message.reply_text("❌ Не удалось распознать текст на фото.")
     os.remove(file_path)
-
-async def handle_remind_button(update, context):
-    """Обработка кнопки Напомнить"""
-    await update.message.reply_text(
-        "⏰ **Создать напоминание**\n\n"
-        "Отправь сообщение в формате:\n"
-        "• `позвонить маме через 10 минут`\n"
-        "• `купить хлеб в 15:30`\n"
-        "• `сдать проект завтра в 9:00`\n\n"
-        "Или используй команду `/remind`",
-        parse_mode="Markdown"
-    )
-
-async def handle_my_reminders_button(update, context):
-    """Обработка кнопки Мои напоминания"""
-    await cmd_my_reminders(update, context)
 
 async def handle_message(update, context):
     user_id = update.effective_user.id
@@ -444,7 +463,6 @@ async def handle_message(update, context):
     if user_id not in waiting_for_city:
         waiting_for_city[user_id] = False
 
-    # Режим ожидания картинки
     if waiting_for_image.get(user_id, False):
         await update.message.reply_text("🎨 Рисую...")
         img = await generate_image(text)
@@ -452,27 +470,67 @@ async def handle_message(update, context):
         waiting_for_image[user_id] = False
         return
 
-    # Режим ожидания города
     if waiting_for_city.get(user_id, False):
         weather = await get_weather(text)
         await update.message.reply_text(weather)
         waiting_for_city[user_id] = False
         return
 
+    # ===== ЕСТЕСТВЕННЫЕ НАПОМИНАНИЯ =====
+    # напомни мне ... в 15:30
+    remind_match = re.search(r'напомни мне\s+(.+?)\s+в\s+(\d{1,2}:\d{2})', text.lower())
+    if remind_match:
+        await process_natural_reminder(update, remind_match.group(1), remind_match.group(2))
+        return
+    
+    # напомни ... через X минут
+    remind_minutes_match = re.search(r'напомни\s+(.+?)\s+через\s+(\d+)\s*(?:минут|минуты|минуту|час|часа|часов)', text.lower())
+    if remind_minutes_match:
+        minutes = int(remind_minutes_match.group(2))
+        unit = remind_minutes_match.group(3) if len(remind_minutes_match.groups()) > 2 else ''
+        if 'час' in unit:
+            minutes = minutes * 60
+        await process_natural_reminder_minutes(update, remind_minutes_match.group(1), minutes)
+        return
+    
+    # создай напоминание ... в 15:30
+    create_match = re.search(r'создай напоминание\s+(.+?)\s+в\s+(\d{1,2}:\d{2})', text.lower())
+    if create_match:
+        await process_natural_reminder(update, create_match.group(1), create_match.group(2))
+        return
+    
+    # напомнить ... завтра в 9:00
+    tomorrow_match = re.search(r'напомнить\s+(.+?)\s+завтра\s+в\s+(\d{1,2}:\d{2})', text.lower())
+    if tomorrow_match:
+        await process_natural_reminder_tomorrow(update, tomorrow_match.group(1), tomorrow_match.group(2))
+        return
+    
+    # запомни ... в 14:00
+    remember_match = re.search(r'запомни\s+(.+?)\s+в\s+(\d{1,2}:\d{2})', text.lower())
+    if remember_match:
+        await process_natural_reminder(update, remember_match.group(1), remember_match.group(2))
+        return
+
     # Кнопки
     if text == "🎨 Картинка":
-        await update.message.reply_text("🖌️ Опиши что нарисовать (например: «кота в космосе»)")
+        await update.message.reply_text("🖌️ Опиши что нарисовать")
         waiting_for_image[user_id] = True
         return
     if text == "🌤️ Погода":
-        await update.message.reply_text("🏙️ Напиши город (например: «Москва»)")
+        await update.message.reply_text("🏙️ Напиши город")
         waiting_for_city[user_id] = True
         return
     if text == "😂 Мем":
         await update.message.reply_text(get_meme())
         return
     if text == "⏰ Напомнить":
-        await handle_remind_button(update, context)
+        await update.message.reply_text(
+            "⏰ **Напиши в любом формате:**\n"
+            "• «напомни мне купить хлеб в 15:30»\n"
+            "• «напомни позвонить маме через 10 минут»\n"
+            "• «напомнить сдать проект завтра в 9:00»",
+            parse_mode="Markdown"
+        )
         return
     if text == "📋 Мои напоминания":
         await cmd_my_reminders(update, context)
@@ -483,13 +541,9 @@ async def handle_message(update, context):
             "🎨 **Картинка** — нажми кнопку и опиши\n"
             "🌤️ **Погода** — нажми кнопку и напиши город\n"
             "😂 **Мем** — случайная шутка\n"
-            "⏰ **Напомнить** — напоминания по времени\n\n"
-            "**Команды напоминаний:**\n"
-            "• `/remind текст через 10 минут`\n"
-            "• `/remind текст в 15:30`\n"
-            "• `/remind текст завтра в 9:00`\n"
-            "• `/my_reminders` — посмотреть все\n"
-            "• `/del_remind 1` — удалить\n\n"
+            "⏰ **Напомнить** — просто напиши: «напомни мне...»\n\n"
+            "📋 `/my_reminders` — посмотреть все напоминания\n"
+            "🗑️ `/del_remind 1` — удалить\n\n"
             "📸 Отправь фото с текстом — я прочитаю\n"
             "💬 Или просто задай вопрос!",
             parse_mode="Markdown"
@@ -540,7 +594,7 @@ def main():
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("✅ марGO с напоминаниями запущен!")
+    print("✅ марGO с естественными напоминаниями запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
