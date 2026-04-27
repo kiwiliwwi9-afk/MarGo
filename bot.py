@@ -186,7 +186,8 @@ def run_scheduler():
 TOKEN = os.environ.get("BOT_TOKEN")
 GROQ_KEY = os.environ.get("GROQ_KEY")
 OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY")
-WIT_AI_KEY = os.environ.get("WIT_AI_KEY")
+YANDEX_API_KEY = os.environ.get("YANDEX_API_KEY")
+YANDEX_FOLDER_ID = os.environ.get("YANDEX_FOLDER_ID")
 
 if not TOKEN:
     raise ValueError("BOT_TOKEN не задан")
@@ -484,19 +485,19 @@ async def process_natural_reminder_tomorrow(update, reminder_text, time_str):
     except:
         await update.message.reply_text("❌ Неправильный формат времени")
 
-# ========== РАСПОЗНАВАНИЕ ГОЛОСА (Wit.ai + конвертация) ==========
-async def recognize_speech(file_path):
-    if not WIT_AI_KEY:
+# ========== РАСПОЗНАВАНИЕ ГОЛОСА (ЯНДЕКС SPEECHKIT) ==========
+async def recognize_speech_yandex(file_path):
+    if not YANDEX_API_KEY or not YANDEX_FOLDER_ID:
         return None
     
     try:
         # Конвертируем ogg в wav
         audio = AudioSegment.from_ogg(file_path)
         wav_path = file_path.replace('.ogg', '.wav')
-        audio.export(wav_path, format='wav')
+        audio.export(wav_path, format='wav', parameters=["-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1"])
         
-        url = "https://api.wit.ai/speech"
-        headers = {"Authorization": f"Bearer {WIT_AI_KEY}"}
+        url = "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize"
+        headers = {"Authorization": f"Api-Key {YANDEX_API_KEY}"}
         
         with open(wav_path, 'rb') as f:
             async with aiohttp.ClientSession() as s:
@@ -504,12 +505,12 @@ async def recognize_speech(file_path):
                     os.remove(wav_path)
                     if r.status == 200:
                         data = await r.json()
-                        return data.get('text')
+                        return data.get('result')
                     else:
-                        print(f"Wit.ai ошибка: {r.status}")
+                        print(f"Yandex ошибка: {r.status}")
                         return None
     except Exception as e:
-        print(f"Ошибка распознавания: {e}")
+        print(f"Ошибка: {e}")
         return None
 
 async def handle_voice(update, context):
@@ -519,14 +520,14 @@ async def handle_voice(update, context):
     file_path = f"temp_voice_{user_id}.ogg"
     await file.download_to_drive(file_path)
     
-    await update.message.reply_text("🎤 Распознаю голосовое сообщение...")
+    await update.message.reply_text("🎤 Распознаю голосовое сообщение через Яндекс...")
     
-    if not WIT_AI_KEY:
-        await update.message.reply_text("❌ Ключ Wit.ai не настроен. Добавь переменную WIT_AI_KEY на Render.")
+    if not YANDEX_API_KEY or not YANDEX_FOLDER_ID:
+        await update.message.reply_text("❌ Яндекс SpeechKit не настроен. Добавь YANDEX_API_KEY и YANDEX_FOLDER_ID на Render.")
         os.remove(file_path)
         return
     
-    recognized_text = await recognize_speech(file_path)
+    recognized_text = await recognize_speech_yandex(file_path)
     
     if recognized_text:
         await update.message.reply_text(f"📝 **Вы сказали:**\n{recognized_text[:500]}", parse_mode="Markdown")
@@ -539,7 +540,7 @@ async def handle_voice(update, context):
         history.append({"role": "assistant", "content": answer})
         save_user_history(user_id, history)
     else:
-        await update.message.reply_text("❌ Не удалось распознать голосовое сообщение.\n\nПроверь:\n• Ключ Wit.ai добавлен на Render\n• В приложении Wit.ai выбран русский язык\n• Голосовое сообщение чёткое")
+        await update.message.reply_text("❌ Не удалось распознать голосовое сообщение. Попробуй сказать чётче.")
     
     os.remove(file_path)
 
@@ -695,11 +696,11 @@ async def handle_message(update, context):
             "📋 **Команды:**\n"
             "🎨 Картинка — нажми кнопку\n"
             "🌤️ Погода — нажми кнопку\n"
-            "😄 Мем — нажми кнопку\n"
+            "😂 Мем — нажми кнопку\n"
             "⏰ Напомнить — «напомни мне...»\n"
             "📰 Новости — /news\n"
             "🎮 Игры — /dice, /coin, /quiz, /guess\n"
-            "🎤 Голос — отправь голосовое сообщение\n"
+            "🎤 Голос — отправь голосовое\n"
             "📸 Фото — отправь фото с текстом\n"
             "📋 Напоминания — /my_reminders\n"
             "🗑️ Удалить — /del_remind 1",
@@ -759,7 +760,7 @@ def main():
     app.add_handler(MessageHandler(filters.Regex(r'^\d+$'), cmd_guess_answer))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("✅ марGO с голосом запущен!")
+    print("✅ марGO с Яндекс SpeechKit запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
