@@ -16,10 +16,10 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from pydub import AudioSegment
 import xml.etree.ElementTree as ET
 
-# ========== RSS ДЛЯ НОВОСТЕЙ ПО СТРАНАМ ==========
+# ========== НОВОСТИ (С ПОДДЕРЖКОЙ РОССИИ) ==========
 NEWS_RSS = {
     'us': 'https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml',
-    'ru': 'https://rss.nytimes.com/services/xml/rss/nyt/Russia.xml',
+    'ru': 'https://meduza.io/rss/all',
     'uk': 'https://rss.nytimes.com/services/xml/rss/nyt/World.xml',
     'fr': 'https://rss.nytimes.com/services/xml/rss/nyt/Europe.xml',
     'de': 'https://rss.nytimes.com/services/xml/rss/nyt/Europe.xml',
@@ -28,6 +28,31 @@ NEWS_RSS = {
 }
 
 async def fetch_news(country='us'):
+    if country == 'ru':
+        sources = [
+            'https://meduza.io/rss/all',
+            'https://ria.ru/export/rss2/index.xml',
+            'https://lenta.ru/rss'
+        ]
+        for src in sources:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(src, timeout=10) as resp:
+                        if resp.status == 200:
+                            text = await resp.text()
+                            root = ET.fromstring(text)
+                            items = root.findall('.//item')
+                            news = []
+                            for item in items[:5]:
+                                title = item.find('title').text
+                                link = item.find('link').text
+                                news.append(f"[{title[:80]}]({link})")
+                            if news:
+                                return news
+            except:
+                continue
+        return None
+    
     url = NEWS_RSS.get(country, NEWS_RSS['us'])
     try:
         async with aiohttp.ClientSession() as session:
@@ -309,7 +334,6 @@ async def translate_text(text, target_lang='ru'):
         return None
 
 async def cmd_translate(update, context):
-    user_id = update.effective_user.id
     text = update.message.text.replace('/translate', '').strip()
     
     if not text:
@@ -336,10 +360,8 @@ async def cmd_translate(update, context):
     else:
         await update.message.reply_text("❌ Не удалось перевести. Попробуй позже.")
 
-# ========== НОВОСТИ С КНОПКАМИ ==========
+# ========== НОВОСТИ ==========
 async def cmd_news(update, context, country=None):
-    user_id = update.effective_user.id
-    
     if country is None:
         text = update.message.text.replace('/news', '').strip().lower()
         countries_map = {
@@ -355,7 +377,9 @@ async def cmd_news(update, context, country=None):
     else:
         country_code = country
     
+    await update.message.reply_text("📰 Загружаю новости...")
     news = await fetch_news(country_code)
+    
     if news:
         result = f"📰 **Новости:**\n\n"
         for i, item in enumerate(news, 1):
@@ -677,7 +701,6 @@ async def recognize_text_from_photo(file_path):
 # ========== ОСНОВНЫЕ ОБРАБОТЧИКИ ==========
 waiting_for_image = {}
 waiting_for_city = {}
-waiting_for_translate = {}
 
 async def start(update, context):
     user_id = update.effective_user.id
@@ -871,7 +894,6 @@ async def handle_message(update, context):
         return
     if text == "🌍 Переводчик":
         await update.message.reply_text("🌍 **Переводчик**\n\nНапиши текст для перевода на русский.\nИли: `/translate en текст`", parse_mode="Markdown")
-        waiting_for_translate[user_id] = True
         return
     if text == "⏰ Напомнить":
         await update.message.reply_text("⏰ **Напиши:** «напомни мне купить хлеб в 15:30»", parse_mode="Markdown")
