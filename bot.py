@@ -18,14 +18,13 @@ import xml.etree.ElementTree as ET
 
 # ========== RSS ДЛЯ НОВОСТЕЙ ПО СТРАНАМ ==========
 NEWS_RSS = {
-    'ru': 'https://rss.nytimes.com/services/xml/rss/nyt/Russia.xml',
+    'ru': 'https://lenta.ru/rss',
     'us': 'https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml',
     'uk': 'https://rss.nytimes.com/services/xml/rss/nyt/World.xml',
     'fr': 'https://rss.nytimes.com/services/xml/rss/nyt/Europe.xml',
     'de': 'https://rss.nytimes.com/services/xml/rss/nyt/Europe.xml',
-    'cn': 'https://rss.nytimes.com/services/xml/rss/nyt/AsiaPacific.xml',
     'jp': 'https://rss.nytimes.com/services/xml/rss/nyt/AsiaPacific.xml',
-    'in': 'https://rss.nytimes.com/services/xml/rss/nyt/AsiaPacific.xml',
+    'cn': 'https://rss.nytimes.com/services/xml/rss/nyt/AsiaPacific.xml',
 }
 
 async def fetch_news(country='us'):
@@ -43,9 +42,9 @@ async def fetch_news(country='us'):
                         link = item.find('link').text
                         news.append(f"[{title[:80]}]({link})")
                     return news
-    except:
-        pass
-    return None
+    except Exception as e:
+        print(f"Ошибка RSS {country}: {e}")
+        return None
 
 # ========== ВЕБ-СЕРВЕР ==========
 web_app = Flask(__name__)
@@ -97,7 +96,7 @@ def get_user_stats(user_id):
     row = cursor.fetchone()
     if row and row[0]:
         return json.loads(row[0])
-    return {"messages": 0, "reminders": 0, "commands": 0}
+    return {"messages": 0, "reminders": 0, "games": 0, "images": 0}
 
 def update_user_stats(user_id, key):
     stats = get_user_stats(user_id)
@@ -310,17 +309,9 @@ async def translate_text(text, target_lang='ru'):
         return None
 
 async def cmd_translate(update, context):
-    user_id = update.effective_user.id
     text = update.message.text.replace('/translate', '').strip()
-    
     if not text:
-        await update.message.reply_text(
-            "🌍 **Переводчик**\n\n"
-            "Используй: `/translate текст` — переведёт на русский\n"
-            "Или: `/translate en текст` — переведёт на английский\n\n"
-            "Коды языков: ru, en, fr, de, es, it, zh, ja",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("🌍 **Переводчик**\n\n/t translate текст — переведу на русский\n/t en текст — на английский", parse_mode="Markdown")
         return
     
     parts = text.split(' ', 1)
@@ -335,34 +326,29 @@ async def cmd_translate(update, context):
     if result:
         await update.message.reply_text(f"🌍 **Перевод:**\n{result}", parse_mode="Markdown")
     else:
-        await update.message.reply_text("❌ Не удалось перевести. Попробуй позже.")
+        await update.message.reply_text("❌ Не удалось перевести")
 
 # ========== НОВОСТИ ПО СТРАНАМ ==========
 async def cmd_news(update, context):
-    user_id = update.effective_user.id
     text = update.message.text.replace('/news', '').strip().lower()
     
     countries = {
         'ru': 'россия', 'russia': 'россия',
         'us': 'сша', 'usa': 'сша', 'america': 'сша',
         'uk': 'великобритания', 'britain': 'великобритания',
-        'fr': 'франция',
-        'de': 'германия',
+        'fr': 'франция', 'france': 'франция',
+        'de': 'германия', 'germany': 'германия',
         'jp': 'япония', 'japan': 'япония',
         'cn': 'китай', 'china': 'китай',
-        'in': 'индия', 'india': 'индия'
     }
     
-    country_code = None
+    country_code = 'us'
     for code, name in countries.items():
         if name in text:
             country_code = code
             break
     
-    if country_code == 'ru':
-        country_code = 'us'
-    
-    news = await fetch_news(country_code or 'us')
+    news = await fetch_news(country_code)
     if news:
         country_name = countries.get(country_code, 'Мир')
         result = f"📰 **Новости {country_name.capitalize()}:**\n\n"
@@ -370,7 +356,7 @@ async def cmd_news(update, context):
             result += f"{i}. {item}\n"
         await update.message.reply_text(result, parse_mode="Markdown", disable_web_page_preview=True)
     else:
-        await update.message.reply_text("❌ Не удалось загрузить новости. Попробуй позже.")
+        await update.message.reply_text("❌ Не удалось загрузить новости")
 
 # ========== СТАТИСТИКА ==========
 async def cmd_stats(update, context):
@@ -381,10 +367,9 @@ async def cmd_stats(update, context):
     await update.message.reply_text(
         f"📊 **Твоя статистика:**\n\n"
         f"💬 Сообщений: {stats.get('messages', 0)}\n"
-        f"⏰ Активных напоминаний: {reminders}\n"
-        f"🎲 Игр сыграно: {stats.get('games', 0)}\n"
-        f"🎨 Картинок сгенерировано: {stats.get('images', 0)}\n\n"
-        f"📅 Пользователь с: {datetime.now().strftime('%d.%m.%Y')}",
+        f"⏰ Напоминаний: {reminders}\n"
+        f"🎮 Игр: {stats.get('games', 0)}\n"
+        f"🎨 Картинок: {stats.get('images', 0)}",
         parse_mode="Markdown"
     )
 
@@ -393,7 +378,7 @@ async def cmd_dice(update, context):
     user_id = update.effective_user.id
     value = random.randint(1, 6)
     dice_faces = ["⚀", "⚁", "⚂", "⚃", "⚄", "⚅"]
-    await update.message.reply_text(f"🎲 Тебе выпало: {dice_faces[value-1]} **{value}**", parse_mode="Markdown")
+    await update.message.reply_text(f"🎲 {dice_faces[value-1]} **{value}**", parse_mode="Markdown")
     update_user_stats(user_id, "games")
 
 async def cmd_coin(update, context):
@@ -404,10 +389,8 @@ async def cmd_coin(update, context):
 
 quiz_questions = [
     {"question": "Сколько планет в Солнечной системе?", "options": ["7", "8", "9", "10"], "answer": "8"},
-    {"question": "Какой язык программирования самый популярный?", "options": ["Java", "Python", "C++", "JavaScript"], "answer": "Python"},
     {"question": "Кто создал Telegram?", "options": ["Илон Маск", "Павел Дуров", "Марк Цукерберг", "Билл Гейтс"], "answer": "Павел Дуров"},
     {"question": "Столица Франции?", "options": ["Лондон", "Берлин", "Париж", "Мадрид"], "answer": "Париж"},
-    {"question": "Самый большой океан?", "options": ["Атлантический", "Индийский", "Северный Ледовитый", "Тихий"], "answer": "Тихий"},
 ]
 
 user_quiz = {}
@@ -417,31 +400,27 @@ async def cmd_quiz(update, context):
     q = random.choice(quiz_questions)
     user_quiz[user_id] = {"question": q["question"], "answer": q["answer"], "options": q["options"]}
     options = "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(q["options"])])
-    await update.message.reply_text(f"❓ **{q['question']}**\n\n{options}\n\n_Ответь номером (1-{len(q['options'])})_", parse_mode="Markdown")
+    await update.message.reply_text(f"❓ {q['question']}\n\n{options}\n\n_Ответь номером_", parse_mode="Markdown")
     update_user_stats(user_id, "games")
 
 async def cmd_quiz_answer(update, context):
     user_id = update.effective_user.id
     if user_id not in user_quiz:
         return
-    
     try:
         answer_num = int(update.message.text)
         q = user_quiz[user_id]
         options = q["options"]
         correct = q["answer"]
-        
         if 1 <= answer_num <= len(options):
-            user_answer = options[answer_num - 1]
-            if user_answer == correct:
-                await update.message.reply_text("✅ **Правильно!** 🎉", parse_mode="Markdown")
+            if options[answer_num - 1] == correct:
+                await update.message.reply_text("✅ Правильно!", parse_mode="Markdown")
             else:
-                await update.message.reply_text(f"❌ **Неправильно!** Правильный ответ: {correct}", parse_mode="Markdown")
+                await update.message.reply_text(f"❌ Неправильно! Ответ: {correct}", parse_mode="Markdown")
         else:
             await update.message.reply_text(f"Введи число от 1 до {len(options)}")
     except ValueError:
-        await update.message.reply_text("Напиши номер ответа цифрой")
-    
+        await update.message.reply_text("Напиши номер цифрой")
     del user_quiz[user_id]
 
 user_number_game = {}
@@ -450,26 +429,23 @@ async def cmd_guess(update, context):
     user_id = update.effective_user.id
     number = random.randint(1, 100)
     user_number_game[user_id] = {"number": number, "attempts": 0}
-    await update.message.reply_text("🔢 Я загадал число от 1 до 100. Попробуй угадать! Напиши число.")
+    await update.message.reply_text("🔢 Я загадал число от 1 до 100. Угадай!")
     update_user_stats(user_id, "games")
 
 async def cmd_guess_answer(update, context):
     user_id = update.effective_user.id
     if user_id not in user_number_game:
         return
-    
     try:
         guess = int(update.message.text)
         game = user_number_game[user_id]
         game["attempts"] += 1
-        number = game["number"]
-        
-        if guess < number:
-            await update.message.reply_text("📈 **Больше!** Попробуй ещё.")
-        elif guess > number:
-            await update.message.reply_text("📉 **Меньше!** Попробуй ещё.")
+        if guess < game["number"]:
+            await update.message.reply_text("📈 Больше!")
+        elif guess > game["number"]:
+            await update.message.reply_text("📉 Меньше!")
         else:
-            await update.message.reply_text(f"🎉 **Поздравляю!** Ты угадал число {number} за {game['attempts']} попыток!")
+            await update.message.reply_text(f"🎉 Угадал! Число {game['number']} за {game['attempts']} попыток!")
             del user_number_game[user_id]
     except ValueError:
         await update.message.reply_text("Введи число!")
@@ -478,27 +454,13 @@ async def cmd_guess_answer(update, context):
 async def cmd_remind(update, context):
     user_id = update.effective_user.id
     text = update.message.text.replace('/remind', '').strip()
-    
     if not text:
-        await update.message.reply_text(
-            "⏰ **Как создать напоминание:**\n\n"
-            "• `/remind позвонить маме через 10 минут`\n"
-            "• `/remind купить хлеб в 15:30`\n"
-            "• `/remind сдать проект завтра в 9:00`\n\n"
-            "Или просто напиши: «напомни мне купить хлеб в 15:30»",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("⏰ /remind текст через 10 минут\n/remind текст в 15:30\n/remind текст завтра в 9:00", parse_mode="Markdown")
         return
     
     remind_time = parse_reminder_time(text)
     if not remind_time:
-        await update.message.reply_text(
-            "❌ Не понял время. Используй формат:\n"
-            "• `через 10 минут`\n"
-            "• `в 15:30`\n"
-            "• `завтра в 9:00`",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("❌ Не понял время", parse_mode="Markdown")
         return
     
     reminder_text = re.sub(r'через \d+ минут|в \d{1,2}:\d{2}|завтра в \d{1,2}:\d{2}', '', text).strip()
@@ -506,110 +468,69 @@ async def cmd_remind(update, context):
         reminder_text = "Напоминание"
     
     reminder_id = add_reminder(user_id, reminder_text, remind_time)
-    time_str = remind_time.strftime("%d.%m.%Y в %H:%M")
-    await update.message.reply_text(
-        f"✅ **Напоминание создано!**\n\n"
-        f"📝 {reminder_text}\n"
-        f"⏰ {time_str}\n\n"
-        f"ID: {reminder_id}",
-        parse_mode="Markdown"
-    )
+    await update.message.reply_text(f"✅ Напоминание {reminder_id}: {reminder_text}\n⏰ {remind_time.strftime('%d.%m.%Y %H:%M')}", parse_mode="Markdown")
     update_user_stats(user_id, "reminders")
 
 async def cmd_my_reminders(update, context):
     user_id = update.effective_user.id
     reminders = get_active_reminders(user_id)
-    
     if not reminders:
-        await update.message.reply_text("📭 Нет активных напоминаний.", parse_mode="Markdown")
+        await update.message.reply_text("📭 Нет напоминаний", parse_mode="Markdown")
         return
-    
     result = "⏰ **Твои напоминания:**\n\n"
     for rid, text, remind_at in reminders:
-        time_str = remind_at.strftime("%d.%m.%Y в %H:%M")
-        result += f"**{rid}.** {text}\n   📅 {time_str}\n\n"
-    result += "🗑️ Удалить: `/del_remind [номер]`"
+        result += f"**{rid}.** {text}\n   📅 {remind_at.strftime('%d.%m.%Y %H:%M')}\n\n"
+    result += "🗑️ /del_remind [ID]"
     await update.message.reply_text(result, parse_mode="Markdown")
 
 async def cmd_del_remind(update, context):
     user_id = update.effective_user.id
     if not context.args:
-        await update.message.reply_text("❌ Укажи ID: `/del_remind 1`", parse_mode="Markdown")
+        await update.message.reply_text("❌ /del_remind 1", parse_mode="Markdown")
         return
     try:
         reminder_id = int(context.args[0])
         if delete_reminder(reminder_id, user_id):
             await update.message.reply_text(f"✅ Напоминание {reminder_id} удалено!", parse_mode="Markdown")
         else:
-            await update.message.reply_text(f"❌ Напоминание {reminder_id} не найдено", parse_mode="Markdown")
+            await update.message.reply_text(f"❌ Не найдено", parse_mode="Markdown")
     except ValueError:
         await update.message.reply_text("❌ ID должен быть числом", parse_mode="Markdown")
 
 async def process_natural_reminder(update, reminder_text, time_str):
-    try:
-        hour, minute = map(int, time_str.split(':'))
-        now = datetime.now()
-        remind_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if remind_time <= now:
-            remind_time += timedelta(days=1)
-        
-        user_id = update.effective_user.id
-        reminder_id = add_reminder(user_id, reminder_text, remind_time)
-        time_str_full = remind_time.strftime("%d.%m.%Y в %H:%M")
-        await update.message.reply_text(
-            f"✅ **Напоминание создано!**\n\n"
-            f"📝 {reminder_text}\n"
-            f"⏰ {time_str_full}\n\n"
-            f"ID: {reminder_id}",
-            parse_mode="Markdown"
-        )
-    except:
-        await update.message.reply_text("❌ Неправильный формат времени")
+    hour, minute = map(int, time_str.split(':'))
+    now = datetime.now()
+    remind_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if remind_time <= now:
+        remind_time += timedelta(days=1)
+    user_id = update.effective_user.id
+    reminder_id = add_reminder(user_id, reminder_text, remind_time)
+    await update.message.reply_text(f"✅ Напоминание {reminder_id}: {reminder_text}\n⏰ {remind_time.strftime('%d.%m.%Y %H:%M')}", parse_mode="Markdown")
 
 async def process_natural_reminder_minutes(update, reminder_text, minutes):
     user_id = update.effective_user.id
     remind_time = datetime.now() + timedelta(minutes=minutes)
     reminder_id = add_reminder(user_id, reminder_text, remind_time)
-    time_str_full = remind_time.strftime("%d.%m.%Y в %H:%M")
-    await update.message.reply_text(
-        f"✅ **Напоминание создано!**\n\n"
-        f"📝 {reminder_text}\n"
-        f"⏰ Через {minutes} минут (в {time_str_full})\n\n"
-        f"ID: {reminder_id}",
-        parse_mode="Markdown"
-    )
+    await update.message.reply_text(f"✅ Напоминание {reminder_id}: {reminder_text}\n⏰ Через {minutes} мин", parse_mode="Markdown")
 
 async def process_natural_reminder_tomorrow(update, reminder_text, time_str):
-    try:
-        hour, minute = map(int, time_str.split(':'))
-        remind_time = datetime.now() + timedelta(days=1)
-        remind_time = remind_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        user_id = update.effective_user.id
-        reminder_id = add_reminder(user_id, reminder_text, remind_time)
-        time_str_full = remind_time.strftime("%d.%m.%Y в %H:%M")
-        await update.message.reply_text(
-            f"✅ **Напоминание создано!**\n\n"
-            f"📝 {reminder_text}\n"
-            f"⏰ {time_str_full}\n\n"
-            f"ID: {reminder_id}",
-            parse_mode="Markdown"
-        )
-    except:
-        await update.message.reply_text("❌ Неправильный формат времени")
+    hour, minute = map(int, time_str.split(':'))
+    remind_time = datetime.now() + timedelta(days=1)
+    remind_time = remind_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    user_id = update.effective_user.id
+    reminder_id = add_reminder(user_id, reminder_text, remind_time)
+    await update.message.reply_text(f"✅ Напоминание {reminder_id}: {reminder_text}\n⏰ {remind_time.strftime('%d.%m.%Y %H:%M')}", parse_mode="Markdown")
 
 # ========== РАСПОЗНАВАНИЕ ГОЛОСА ==========
 async def recognize_speech_yandex(file_path):
     if not YANDEX_API_KEY or not YANDEX_FOLDER_ID:
         return None
-    
     try:
         audio = AudioSegment.from_ogg(file_path)
         wav_path = file_path.replace('.ogg', '.wav')
         audio.export(wav_path, format='wav', parameters=["-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1"])
-        
         url = "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize"
         headers = {"Authorization": f"Api-Key {YANDEX_API_KEY}"}
-        
         with open(wav_path, 'rb') as f:
             async with aiohttp.ClientSession() as s:
                 async with s.post(url, headers=headers, data=f, timeout=15) as r:
@@ -617,11 +538,8 @@ async def recognize_speech_yandex(file_path):
                     if r.status == 200:
                         data = await r.json()
                         return data.get('result')
-                    else:
-                        print(f"Yandex ошибка: {r.status}")
-                        return None
-    except Exception as e:
-        print(f"Ошибка: {e}")
+        return None
+    except:
         return None
 
 async def handle_voice(update, context):
@@ -630,29 +548,14 @@ async def handle_voice(update, context):
     file = await voice.get_file()
     file_path = f"temp_voice_{user_id}.ogg"
     await file.download_to_drive(file_path)
-    
-    await update.message.reply_text("🎤 Распознаю голосовое сообщение...")
-    
-    if not YANDEX_API_KEY or not YANDEX_FOLDER_ID:
-        await update.message.reply_text("❌ Яндекс SpeechKit не настроен")
-        os.remove(file_path)
-        return
-    
+    await update.message.reply_text("🎤 Распознаю голос...")
     recognized_text = await recognize_speech_yandex(file_path)
-    
     if recognized_text:
-        await update.message.reply_text(f"📝 **Вы сказали:**\n{recognized_text[:500]}", parse_mode="Markdown")
-        await update.message.reply_text("💭 Думаю над ответом...")
+        await update.message.reply_text(f"📝 {recognized_text[:500]}")
         answer = await ask_groq(recognized_text)
         await update.message.reply_text(answer)
-        
-        history = get_user_history(user_id)
-        history.append({"role": "user", "content": f"[Голос] {recognized_text[:200]}"})
-        history.append({"role": "assistant", "content": answer})
-        save_user_history(user_id, history)
     else:
-        await update.message.reply_text("❌ Не удалось распознать голосовое сообщение.")
-    
+        await update.message.reply_text("❌ Не распознано")
     os.remove(file_path)
 
 # ========== OCR ==========
@@ -660,60 +563,47 @@ async def recognize_text_from_photo(file_path):
     url = "https://api.ocr.space/parse/image"
     with open(file_path, 'rb') as f:
         files = {'file': f}
-        data = {
-            'language': 'rus',
-            'isOverlayRequired': False,
-            'scale': True,
-            'OCREngine': 2,
-            'detectOrientation': True
-        }
+        data = {'language': 'rus', 'isOverlayRequired': False, 'scale': True, 'OCREngine': 2, 'detectOrientation': True}
         try:
             async with aiohttp.ClientSession() as s:
                 async with s.post(url, data=data, files=files, timeout=30) as r:
                     if r.status == 200:
                         result = await r.json()
-                        if result.get('IsErroredOnProcessing'):
-                            return None
                         if result.get('ParsedResults') and len(result['ParsedResults']) > 0:
                             text = result['ParsedResults'][0]['ParsedText']
                             if text and len(text.strip()) > 3:
                                 return text.strip()
-                    return None
-        except Exception as e:
-            print(f"OCR ошибка: {e}")
-            return None
+        except:
+            pass
+        return None
 
-# ========== ОБРАБОТЧИКИ ==========
+# ========== ОСНОВНЫЕ ОБРАБОТЧИКИ ==========
 waiting_for_image = {}
 waiting_for_city = {}
-waiting_for_translate = {}
 
 async def start(update, context):
     user_id = update.effective_user.id
     waiting_for_image[user_id] = False
     waiting_for_city[user_id] = False
     save_user_history(user_id, [])
-    
-    # Создаём статистику если нет
     if not get_user_stats(user_id):
         cursor.execute("INSERT OR REPLACE INTO users (user_id, stats, last_active) VALUES (?, ?, ?)", 
-                       (user_id, json.dumps({"messages": 0, "reminders": 0, "commands": 0, "games": 0, "images": 0}), datetime.now()))
+                       (user_id, json.dumps({"messages": 0, "reminders": 0, "games": 0, "images": 0}), datetime.now()))
         conn.commit()
-
     await update.message.reply_text(
-        "🤍 **Привет! Я марGO — твой умный помощник!**\n\n"
-        "🎨 **Картинка** — нажми кнопку и опиши\n"
-        "🌤️ **Погода** — нажми кнопку и напиши город\n"
-        "🌍 **Переводчик** — нажми кнопку или `/translate текст`\n"
-        "⏰ **Напомнить** — «напомни мне купить хлеб в 15:30»\n"
-        "📰 **Новости** — нажми кнопку или `/news россия`\n"
-        "🎮 **Игры** — /dice, /coin, /quiz, /guess\n"
-        "📊 **Статистика** — твоя активность\n"
-        "🎤 **Голос** — отправь голосовое сообщение\n"
-        "📸 **Фото с текстом** — я прочитаю и отвечу\n\n"
-        "💬 **Мои напоминания** — список напоминаний\n"
-        "🗑️ **Удалить** — `/del_remind 1`\n\n"
-        "Просто задавай вопросы — я отвечу!",
+        "🤍 **Привет! Я марGO**\n\n"
+        "🎨 Картинка — нажми кнопку\n"
+        "🌤️ Погода — нажми кнопку\n"
+        "🌍 Переводчик — нажми кнопку\n"
+        "⏰ Напомнить — «напомни мне...»\n"
+        "📰 Новости — /news или /news россия\n"
+        "🎮 Игры — /dice, /coin, /quiz, /guess\n"
+        "📊 Статистика — /stats\n"
+        "📸 Фото с текстом — отправь фото\n"
+        "🎤 Голос — отправь голосовое\n\n"
+        "📋 /my_reminders — список напоминаний\n"
+        "🗑️ /del_remind 1 — удалить\n\n"
+        "Просто задавай вопросы!",
         parse_mode="Markdown",
         reply_markup=get_keyboard()
     )
@@ -724,30 +614,20 @@ async def handle_photo(update, context):
     file = await photo.get_file()
     file_path = f"temp_{user_id}.jpg"
     await file.download_to_drive(file_path)
-    
-    await update.message.reply_text("📸 Распознаю текст с фото...")
+    await update.message.reply_text("📸 Распознаю текст...")
     recognized_text = await recognize_text_from_photo(file_path)
-    
-    if recognized_text and recognized_text.strip():
-        await update.message.reply_text(f"📄 **Распознанный текст:**\n{recognized_text[:500]}", parse_mode="Markdown")
-        await update.message.reply_text("💭 Думаю над ответом...")
-        answer = await ask_groq(f"Вот текст с фото. Ответь на вопрос или реши задачу: {recognized_text}")
+    if recognized_text:
+        await update.message.reply_text(f"📄 {recognized_text[:500]}")
+        answer = await ask_groq(recognized_text)
         await update.message.reply_text(answer)
-        
-        history = get_user_history(user_id)
-        history.append({"role": "user", "content": f"[Фото] {recognized_text[:200]}"})
-        history.append({"role": "assistant", "content": answer})
-        save_user_history(user_id, history)
     else:
-        await update.message.reply_text("❌ Не удалось распознать текст на фото.")
-    
+        await update.message.reply_text("❌ Не распознано")
     os.remove(file_path)
 
 async def handle_message(update, context):
     user_id = update.effective_user.id
     text = update.message.text
     history = get_user_history(user_id)
-    
     update_user_stats(user_id, "messages")
 
     if user_id not in waiting_for_image:
@@ -756,7 +636,6 @@ async def handle_message(update, context):
         waiting_for_city[user_id] = False
 
     if waiting_for_image.get(user_id, False):
-        await update.message.reply_text("🎨 Рисую...")
         img = await generate_image(text)
         await update.message.reply_photo(img, caption=text)
         waiting_for_image[user_id] = False
@@ -769,58 +648,40 @@ async def handle_message(update, context):
         waiting_for_city[user_id] = False
         return
 
-    # ===== ЕСТЕСТВЕННЫЕ КОМАНДЫ =====
-    # Мои напоминания
+    # Естественные команды
     if re.search(r'(мои|список|покажи)\s+напоминани[яй]', text.lower()):
         await cmd_my_reminders(update, context)
         return
-    
-    # Создай напоминание
-    remind_create_match = re.search(r'(создай|добавь|новое)\s+напоминани[ее]\s+(.+?)\s+на\s+(.+)', text.lower())
-    if remind_create_match:
-        reminder_text = remind_create_match.group(2)
-        time_str = remind_create_match.group(3)
-        await process_natural_reminder(update, reminder_text, time_str)
+    if re.search(r'(удали|удалить)\s+напоминани[ее]\s+(\d+)', text.lower()):
+        match = re.search(r'(\d+)', text)
+        if match:
+            reminder_id = int(match.group(1))
+            if delete_reminder(reminder_id, user_id):
+                await update.message.reply_text(f"✅ Напоминание {reminder_id} удалено!")
+            else:
+                await update.message.reply_text(f"❌ Не найдено")
         return
-    
-    # Удали напоминание
-    del_match = re.search(r'(удали|удалить)\s+напоминани[ее]\s+(\d+)', text.lower())
-    if del_match:
-        reminder_id = int(del_match.group(2))
-        if delete_reminder(reminder_id, user_id):
-            await update.message.reply_text(f"✅ Напоминание {reminder_id} удалено!", parse_mode="Markdown")
-        else:
-            await update.message.reply_text(f"❌ Напоминание {reminder_id} не найдено", parse_mode="Markdown")
-        return
-    
-    # Статистика
     if re.search(r'(моя|мои|покажи)\s+статистик[ау]', text.lower()):
         await cmd_stats(update, context)
         return
-    
-    # Перевод
     if text.lower().startswith("переведи") or text.lower().startswith("перевод"):
         text_to_translate = text[text.find(' ')+1:].strip()
         if text_to_translate:
             result = await translate_text(text_to_translate, 'ru')
             if result:
                 await update.message.reply_text(f"🌍 **Перевод:**\n{result}", parse_mode="Markdown")
-            else:
-                await update.message.reply_text("❌ Не удалось перевести")
         return
 
-    # Естественные напоминания (напомни мне...)
+    # Естественные напоминания
     remind_match = re.search(r'напомни мне\s+(.+?)\s+в\s+(\d{1,2}:\d{2})', text.lower())
     if remind_match:
         await process_natural_reminder(update, remind_match.group(1), remind_match.group(2))
         return
-    
     remind_minutes_match = re.search(r'напомни\s+(.+?)\s+через\s+(\d+)\s*(?:минут|минуты|минуту|час|часа|часов)', text.lower())
     if remind_minutes_match:
         minutes = int(remind_minutes_match.group(2))
         await process_natural_reminder_minutes(update, remind_minutes_match.group(1), minutes)
         return
-    
     tomorrow_match = re.search(r'напомнить\s+(.+?)\s+завтра\s+в\s+(\d{1,2}:\d{2})', text.lower())
     if tomorrow_match:
         await process_natural_reminder_tomorrow(update, tomorrow_match.group(1), tomorrow_match.group(2))
@@ -836,47 +697,34 @@ async def handle_message(update, context):
         waiting_for_city[user_id] = True
         return
     if text == "🌍 Переводчик":
-        await update.message.reply_text("🌍 **Переводчик**\n\nНапиши текст для перевода на русский.\nИли: `/translate en текст`", parse_mode="Markdown")
-        waiting_for_translate[user_id] = True
+        await update.message.reply_text("🌍 Напиши текст для перевода")
         return
     if text == "⏰ Напомнить":
-        await update.message.reply_text("⏰ **Напиши:** «напомни мне купить хлеб в 15:30»", parse_mode="Markdown")
+        await update.message.reply_text("⏰ «напомни мне купить хлеб в 15:30»")
         return
     if text == "📰 Новости":
-        await update.message.reply_text(
-            "📰 **Новости**\n\n"
-            "• `/news` — главные новости\n"
-            "• `/news россия` — новости России\n"
-            "• `/news сша` — новости США\n"
-            "• `/news франция` — новости Франции\n"
-            "• `/news япония` — новости Японии",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("📰 /news россия\n/news сша\n/news франция\n/news германия\n/news япония")
         return
     if text == "🎮 Игры":
-        await update.message.reply_text(
-            "🎮 **Игры:**\n/dice — кубик\n/coin — орёл/решка\n/quiz — викторина\n/guess — угадай число",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("🎮 /dice\n/coin\n/quiz\n/guess")
         return
     if text == "📊 Статистика":
         await cmd_stats(update, context)
         return
     if text == "❓ Помощь":
         await update.message.reply_text(
-            "📋 **Все команды:**\n\n"
-            "🎨 **Картинка** — нажми кнопку\n"
-            "🌤️ **Погода** — нажми кнопку\n"
-            "🌍 **Переводчик** — нажми кнопку или `/translate текст`\n"
-            "⏰ **Напомнить** — «напомни мне...»\n"
-            "📰 **Новости** — `/news` или `/news страна`\n"
-            "🎮 **Игры** — /dice, /coin, /quiz, /guess\n"
-            "📊 **Статистика** — твоя активность\n"
-            "🎤 **Голос** — отправь голосовое\n"
-            "📸 **Фото с текстом** — отправь фото\n"
-            "📋 **Мои напоминания** — список\n"
-            "🗑️ **Удалить напоминание** — `/del_remind 1`\n\n"
-            "💬 Просто задавай вопросы!",
+            "📋 **Команды:**\n"
+            "🎨 Картинка — кнопка\n"
+            "🌤️ Погода — кнопка\n"
+            "🌍 Переводчик — кнопка\n"
+            "📰 Новости — /news\n"
+            "🎮 Игры — /dice, /coin, /quiz, /guess\n"
+            "📊 Статистика — /stats\n"
+            "⏰ Напомнить — «напомни мне...»\n"
+            "📋 /my_reminders\n"
+            "🗑️ /del_remind 1\n"
+            "📸 Фото — отправь фото\n"
+            "🎤 Голос — отправь голосовое",
             parse_mode="Markdown"
         )
         return
@@ -885,7 +733,6 @@ async def handle_message(update, context):
     if text.lower().startswith("нарисуй"):
         prompt = text[7:].strip()
         if prompt:
-            await update.message.reply_text("🎨 Рисую...")
             img = await generate_image(prompt)
             await update.message.reply_photo(img, caption=prompt)
             update_user_stats(user_id, "images")
@@ -933,7 +780,7 @@ def main():
     app.add_handler(MessageHandler(filters.Regex(r'^\d+$'), cmd_guess_answer))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("✅ марGO с обновлениями запущен!")
+    print("✅ марGO запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
