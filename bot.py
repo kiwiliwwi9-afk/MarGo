@@ -14,222 +14,6 @@ from flask import Flask
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from pydub import AudioSegment
-import xml.etree.ElementTree as ET
-
-# ========== НОВОСТИ (С ПОДДЕРЖКОЙ РОССИИ) ==========
-NEWS_RSS = {
-    'us': 'https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml',
-    'ru': 'https://meduza.io/rss/all',
-    'uk': 'https://rss.nytimes.com/services/xml/rss/nyt/World.xml',
-    'fr': 'https://rss.nytimes.com/services/xml/rss/nyt/Europe.xml',
-    'de': 'https://rss.nytimes.com/services/xml/rss/nyt/Europe.xml',
-    'jp': 'https://rss.nytimes.com/services/xml/rss/nyt/AsiaPacific.xml',
-    'cn': 'https://rss.nytimes.com/services/xml/rss/nyt/AsiaPacific.xml',
-}
-
-async def fetch_news(country='us'):
-    if country == 'ru':
-        sources = [
-            'https://meduza.io/rss/all',
-            'https://ria.ru/export/rss2/index.xml',
-            'https://lenta.ru/rss'
-        ]
-        for src in sources:
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(src, timeout=10) as resp:
-                        if resp.status == 200:
-                            text = await resp.text()
-                            root = ET.fromstring(text)
-                            items = root.findall('.//item')
-                            news = []
-                            for item in items[:5]:
-                                title = item.find('title').text
-                                link = item.find('link').text
-                                news.append(f"[{title[:80]}]({link})")
-                            if news:
-                                return news
-            except:
-                continue
-        return None
-    
-    url = NEWS_RSS.get(country, NEWS_RSS['us'])
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=10) as resp:
-                if resp.status == 200:
-                    text = await resp.text()
-                    root = ET.fromstring(text)
-                    items = root.findall('.//item')
-                    news = []
-                    for item in items[:5]:
-                        title = item.find('title').text
-                        link = item.find('link').text
-                        news.append(f"[{title[:80]}]({link})")
-                    return news
-    except:
-        pass
-    return None
-
-# ========== ВЕБ-СЕРВЕР ==========
-web_app = Flask(__name__)
-
-@web_app.route('/')
-def health():
-    return "Бот марGO работает!"
-
-def run_web():
-    web_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
-
-# ========== АВТОПИНГ ==========
-def keep_alive():
-    url = f"https://{os.environ.get('RENDER_EXTERNAL_URL', 'localhost')}"
-    while True:
-        try:
-            requests.get(url, timeout=10)
-            print("✅ Пинг отправлен")
-        except:
-            pass
-        time.sleep(240)
-
-# ========== БАЗА ДАННЫХ ==========
-conn = sqlite3.connect('margo.db', check_same_thread=False)
-cursor = conn.cursor()
-
-cursor.execute('''
-    CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY,
-        history TEXT,
-        stats TEXT,
-        last_active TIMESTAMP
-    )
-''')
-
-cursor.execute('''
-    CREATE TABLE IF NOT EXISTS reminders (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        text TEXT,
-        remind_at TIMESTAMP,
-        created_at TIMESTAMP
-    )
-''')
-conn.commit()
-
-def get_user_stats(user_id):
-    cursor.execute("SELECT stats FROM users WHERE user_id = ?", (user_id,))
-    row = cursor.fetchone()
-    if row and row[0]:
-        return json.loads(row[0])
-    return {"messages": 0, "reminders": 0, "commands": 0, "games": 0, "images": 0}
-
-def update_user_stats(user_id, key):
-    stats = get_user_stats(user_id)
-    stats[key] = stats.get(key, 0) + 1
-    cursor.execute("UPDATE users SET stats = ? WHERE user_id = ?", (json.dumps(stats), user_id))
-    conn.commit()
-
-def get_user_history(user_id):
-    cursor.execute("SELECT history FROM users WHERE user_id = ?", (user_id,))
-    row = cursor.fetchone()
-    if row and row[0]:
-        return json.loads(row[0])
-    return []
-
-def save_user_history(user_id, history):
-    if len(history) > 20:
-        history = history[-20:]
-    cursor.execute('''
-        INSERT OR REPLACE INTO users (user_id, history, stats, last_active)
-        VALUES (?, ?, ?, ?)
-    ''', (user_id, json.dumps(history), json.dumps(get_user_stats(user_id)), datetime.now()))
-    conn.commit()
-
-def add_reminder(user_id, text, remind_at):
-    cursor.execute('''
-        INSERT INTO reminders (user_id, text, remind_at, created_at)
-        VALUES (?, ?, ?, ?)
-    ''', (user_id, text, remind_at, datetime.now()))
-    conn.commit()
-    return cursor.lastrowid
-
-def get_active_reminders(user_id):
-    cursor.execute("SELECT id, text, remind_at FROM reminders WHERE user_id = ? AND remind_at > ? ORDER BY remind_at", 
-                   (user_id, datetime.now()))
-    return cursor.fetchall()
-
-def delete_reminder(reminder_id, user_id):
-    cursor.execute("DELETE FROM reminders WHERE id = ? AND user_id = ?", (reminder_id, user_id))
-    conn.commit()
-    return cursor.rowcount > 0
-
-def get_due_reminders():
-    cursor.execute("SELECT id, user_id, text FROM reminders WHERE remind_at <= ?", (datetime.now(),))
-    return cursor.fetchall()
-
-def delete_reminder_by_id(reminder_id):
-    cursor.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
-    conn.commit()
-
-def parse_reminder_time(text):
-    text = text.lower()
-    now = datetime.now()
-    
-    match = re.search(r'через\s+(\d+)\s*(минут|минуты|минуту|час|часов|часа)', text)
-    if match:
-        amount = int(match.group(1))
-        unit = match.group(2)
-        if 'час' in unit:
-            return now + timedelta(hours=amount)
-        else:
-            return now + timedelta(minutes=amount)
-    
-    match = re.search(r'в\s+(\d{1,2}):(\d{2})', text)
-    if match:
-        hour = int(match.group(1))
-        minute = int(match.group(2))
-        remind_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if remind_time <= now:
-            remind_time += timedelta(days=1)
-        return remind_time
-    
-    match = re.search(r'завтра\s+в\s+(\d{1,2}):(\d{2})', text)
-    if match:
-        hour = int(match.group(1))
-        minute = int(match.group(2))
-        remind_time = (now + timedelta(days=1)).replace(hour=hour, minute=minute, second=0, microsecond=0)
-        return remind_time
-    
-    return None
-
-# ========== ПЛАНИРОВЩИК ==========
-reminder_running = False
-
-def check_and_send_reminders():
-    due_reminders = get_due_reminders()
-    for reminder_id, user_id, text in due_reminders:
-        try:
-            asyncio.run_coroutine_threadsafe(
-                application.bot.send_message(
-                    chat_id=user_id, 
-                    text=f"⏰ **Напоминание!**\n\n{text}",
-                    parse_mode="Markdown"
-                ),
-                loop
-            )
-            print(f"✅ Напоминание {reminder_id} отправлено")
-        except Exception as e:
-            print(f"❌ Ошибка: {e}")
-        delete_reminder_by_id(reminder_id)
-
-def run_scheduler():
-    global reminder_running
-    if reminder_running:
-        return
-    reminder_running = True
-    while True:
-        check_and_send_reminders()
-        time.sleep(30)
 
 # ========== НАСТРОЙКИ ==========
 TOKEN = os.environ.get("BOT_TOKEN")
@@ -243,18 +27,85 @@ if not TOKEN:
 
 logging.basicConfig(level=logging.INFO)
 
-global application
-global loop
+# ========== БАЗА ДАННЫХ ==========
+conn = sqlite3.connect('margo.db', check_same_thread=False)
+cursor = conn.cursor()
 
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER PRIMARY KEY,
+        name TEXT DEFAULT 'друг',
+        messages INTEGER DEFAULT 0,
+        images INTEGER DEFAULT 0,
+        games INTEGER DEFAULT 0,
+        reminders INTEGER DEFAULT 0,
+        premium INTEGER DEFAULT 0,
+        created_at TIMESTAMP,
+        last_active TIMESTAMP
+    )
+''')
+
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS reminders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        text TEXT,
+        remind_at TIMESTAMP,
+        created_at TIMESTAMP
+    )
+''')
+
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS memory (
+        user_id INTEGER,
+        role TEXT,
+        content TEXT,
+        created_at TIMESTAMP
+    )
+''')
+conn.commit()
+
+def get_user(user_id):
+    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    if not row:
+        cursor.execute('''
+            INSERT INTO users (user_id, created_at, last_active)
+            VALUES (?, ?, ?)
+        ''', (user_id, datetime.now(), datetime.now()))
+        conn.commit()
+        cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
+    return row
+
+def update_stats(user_id, field):
+    cursor.execute(f"UPDATE users SET {field} = {field} + 1, last_active = ? WHERE user_id = ?", (datetime.now(), user_id))
+    conn.commit()
+
+def save_memory(user_id, role, content):
+    cursor.execute("INSERT INTO memory (user_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+                   (user_id, role, content[:500], datetime.now()))
+    conn.commit()
+    # Оставляем только последние 50 сообщений
+    cursor.execute("DELETE FROM memory WHERE user_id = ? AND created_at < (SELECT created_at FROM memory WHERE user_id = ? ORDER BY created_at DESC LIMIT 1 OFFSET 50)", (user_id, user_id))
+    conn.commit()
+
+def get_memory(user_id):
+    cursor.execute("SELECT role, content FROM memory WHERE user_id = ? ORDER BY created_at DESC LIMIT 15", (user_id,))
+    rows = cursor.fetchall()
+    return list(reversed(rows))
+
+# ========== КЛАВИАТУРА ==========
 def get_keyboard():
     buttons = [
         [KeyboardButton("🎨 Картинка"), KeyboardButton("🌤️ Погода")],
         [KeyboardButton("🌍 Переводчик"), KeyboardButton("⏰ Напомнить")],
-        [KeyboardButton("📰 Новости"), KeyboardButton("🎮 Игры")],
-        [KeyboardButton("📊 Статистика"), KeyboardButton("❓ Помощь")]
+        [KeyboardButton("🎮 Игры"), KeyboardButton("💬 Цитата")],
+        [KeyboardButton("📊 Профиль"), KeyboardButton("❓ Помощь")]
     ]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
+# ========== GROQ (УМНЫЙ) ==========
 async def ask_groq(prompt):
     if not GROQ_KEY:
         return "🔌 Groq не настроен"
@@ -263,12 +114,12 @@ async def ask_groq(prompt):
     payload = {
         "model": "llama-3.3-70b-versatile",
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 600,
-        "temperature": 0.7
+        "max_tokens": 1000,
+        "temperature": 0.8
     }
     try:
         async with aiohttp.ClientSession() as s:
-            async with s.post(url, headers=headers, json=payload, timeout=15) as r:
+            async with s.post(url, headers=headers, json=payload, timeout=20) as r:
                 if r.status == 200:
                     data = await r.json()
                     return data['choices'][0]['message']['content']
@@ -276,23 +127,34 @@ async def ask_groq(prompt):
     except Exception as e:
         return f"❌ Ошибка: {str(e)}"
 
-async def ask_groq_with_memory(prompt, history):
+async def ask_groq_with_memory(user_id, prompt):
+    history = get_memory(user_id)
     context = ""
-    if history:
-        recent = history[-4:]
-        for msg in recent:
-            role = "Пользователь" if msg['role'] == 'user' else "Ты"
-            context += f"{role}: {msg['content']}\n"
-    full_prompt = f"""Отвечай ТОЛЬКО на русском языке. Никаких других языков, только русский.
+    for role, content in history[-6:]:
+        context += f"{role}: {content}\n"
+    full_prompt = f"""Ты — марGO, живой умный помощник. Отвечай на русском. Учитывай историю разговора.
 
+История:
 {context}
 Пользователь: {prompt}
 марGO:"""
     return await ask_groq(full_prompt)
 
-# ========== КАРТИНКИ ==========
+# ========== КАРТИНКИ (LEXICA - КРУТЫЕ) ==========
 async def generate_image(prompt):
-    enhanced = f"masterpiece, best quality, {prompt}"
+    enhanced = f"masterpiece, best quality, highly detailed, {prompt}"
+    try:
+        url = "https://lexica.art/api/v1/search"
+        params = {"q": enhanced, "limit": 1}
+        async with aiohttp.ClientSession() as s:
+            async with s.get(url, params=params, timeout=15) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    if data.get('images') and len(data['images']) > 0:
+                        return data['images'][0]['src']
+    except:
+        pass
+    # fallback
     seed = random.randint(1, 999999)
     return f"https://image.pollinations.ai/prompt/{enhanced.replace(' ', '%20')}?width=1024&height=1024&nologo=true&seed={seed}"
 
@@ -314,671 +176,306 @@ async def get_weather(city):
         return "❌ Ошибка погоды"
 
 # ========== ПЕРЕВОДЧИК ==========
-async def translate_text(text, target_lang='ru'):
+async def translate(text, target='ru'):
     url = "https://translate.googleapis.com/translate_a/single"
-    params = {
-        'client': 'gtx',
-        'sl': 'auto',
-        'tl': target_lang,
-        'dt': 't',
-        'q': text
-    }
+    params = {'client': 'gtx', 'sl': 'auto', 'tl': target, 'dt': 't', 'q': text}
     try:
         async with aiohttp.ClientSession() as s:
             async with s.get(url, params=params, timeout=10) as r:
                 if r.status == 200:
                     data = await r.json()
                     return data[0][0][0]
-                return None
     except:
-        return None
+        pass
+    return None
 
-async def cmd_translate(update, context):
-    text = update.message.text.replace('/translate', '').strip()
-    
-    if not text:
-        await update.message.reply_text(
-            "🌍 **Переводчик**\n\n"
-            "Используй: `/translate текст` — переведёт на русский\n"
-            "Или: `/translate en текст` — переведёт на английский\n\n"
-            "Коды языков: ru, en, fr, de, es, it, zh, ja",
-            parse_mode="Markdown"
-        )
-        return
-    
-    parts = text.split(' ', 1)
-    if len(parts) == 2 and len(parts[0]) == 2:
-        target_lang = parts[0]
-        text_to_translate = parts[1]
-    else:
-        target_lang = 'ru'
-        text_to_translate = text
-    
-    result = await translate_text(text_to_translate, target_lang)
-    if result:
-        await update.message.reply_text(f"🌍 **Перевод:**\n{result}", parse_mode="Markdown")
-    else:
-        await update.message.reply_text("❌ Не удалось перевести. Попробуй позже.")
+# ========== НАПОМИНАНИЯ ==========
+def parse_time(text):
+    now = datetime.now()
+    match = re.search(r'через\s+(\d+)\s*(минут|минуты|минуту|час|часа|часов)', text.lower())
+    if match:
+        amount = int(match.group(1))
+        unit = match.group(2)
+        if 'час' in unit:
+            return now + timedelta(hours=amount)
+        return now + timedelta(minutes=amount)
+    match = re.search(r'в\s+(\d{1,2}):(\d{2})', text)
+    if match:
+        hour, minute = int(match.group(1)), int(match.group(2))
+        remind = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if remind <= now:
+            remind += timedelta(days=1)
+        return remind
+    return None
 
-# ========== НОВОСТИ ==========
-async def cmd_news(update, context, country=None):
-    if country is None:
-        text = update.message.text.replace('/news', '').strip().lower()
-        countries_map = {
-            'россия': 'ru', 'russia': 'ru',
-            'сша': 'us', 'usa': 'us', 'америка': 'us',
-            'великобритания': 'uk', 'britain': 'uk', 'англия': 'uk',
-            'франция': 'fr', 'france': 'fr',
-            'германия': 'de', 'germany': 'de',
-            'япония': 'jp', 'japan': 'jp',
-            'китай': 'cn', 'china': 'cn'
-        }
-        country_code = countries_map.get(text, 'us')
-    else:
-        country_code = country
-    
-    await update.message.reply_text("📰 Загружаю новости...")
-    news = await fetch_news(country_code)
-    
-    if news:
-        result = f"📰 **Новости:**\n\n"
-        for i, item in enumerate(news, 1):
-            result += f"{i}. {item}\n"
-        await update.message.reply_text(result, parse_mode="Markdown", disable_web_page_preview=True)
-    else:
-        await update.message.reply_text("❌ Не удалось загрузить новости. Попробуй позже.")
+# ========== ПЛАНИРОВЩИК ==========
+def check_reminders():
+    cursor.execute("SELECT id, user_id, text FROM reminders WHERE remind_at <= ?", (datetime.now(),))
+    reminders = cursor.fetchall()
+    for rid, uid, text in reminders:
+        try:
+            asyncio.run_coroutine_threadsafe(
+                application.bot.send_message(chat_id=uid, text=f"⏰ **Напоминание!**\n\n{text}", parse_mode="Markdown"),
+                loop
+            )
+        except:
+            pass
+        cursor.execute("DELETE FROM reminders WHERE id = ?", (rid,))
+    conn.commit()
 
-# ========== СТАТИСТИКА ==========
-async def cmd_stats(update, context):
+def run_scheduler():
+    while True:
+        check_reminders()
+        time.sleep(30)
+
+# ========== КОМАНДЫ ==========
+async def start(update, context):
     user_id = update.effective_user.id
-    stats = get_user_stats(user_id)
-    reminders = len(get_active_reminders(user_id))
-    
+    user = get_user(user_id)
+    name = update.effective_user.first_name or "друг"
     await update.message.reply_text(
-        f"📊 **Твоя статистика:**\n\n"
-        f"💬 Сообщений: {stats.get('messages', 0)}\n"
-        f"⏰ Активных напоминаний: {reminders}\n"
-        f"🎲 Игр сыграно: {stats.get('games', 0)}\n"
-        f"🎨 Картинок сгенерировано: {stats.get('images', 0)}\n\n"
-        f"📅 Пользователь с: {datetime.now().strftime('%d.%m.%Y')}",
+        f"🤍 **Привет, {name}! Я марGO — твой супер-помощник!**\n\n"
+        f"🎨 **Картинка** — нажми кнопку\n"
+        f"🌤️ **Погода** — нажми кнопку\n"
+        f"🌍 **Переводчик** — нажми кнопку\n"
+        f"⏰ **Напомнить** — «напомни мне купить хлеб в 15:30»\n"
+        f"🎮 **Игры** — /dice, /coin, /quiz, /guess\n"
+        f"💬 **Цитата** — мудрая фраза\n"
+        f"📊 **Профиль** — твоя статистика\n\n"
+        f"Просто задавай вопросы — я отвечу!",
+        parse_mode="Markdown",
+        reply_markup=get_keyboard()
+    )
+
+async def cmd_profile(update, context):
+    user_id = update.effective_user.id
+    user = get_user(user_id)
+    await update.message.reply_text(
+        f"📊 **Твой профиль:**\n\n"
+        f"💬 Сообщений: {user[2]}\n"
+        f"🎨 Картинок: {user[3]}\n"
+        f"🎮 Игр: {user[4]}\n"
+        f"⏰ Напоминаний: {user[5]}\n"
+        f"👑 Премиум: {'✅' if user[6] else '❌'}\n"
+        f"📅 Впервые: {user[7][:10] if user[7] else 'сегодня'}",
         parse_mode="Markdown"
     )
 
-# ========== ИГРЫ ==========
+async def cmd_quote(update, context):
+    quotes = [
+        "💡 Код — это поэзия, которую понимает компьютер.",
+        "🚀 Лучший способ предсказать будущее — создать его самому.",
+        "🤍 Простота — высшая сложность.",
+        "🌍 GO World — твой мир. Твои правила.",
+        "🎨 марGO рисует, отвечает, напоминает — всё в одном!",
+        "⏰ Время — самый ценный ресурс. Не трать его зря.",
+        "💬 Лучший способ научиться — делать.",
+    ]
+    await update.message.reply_text(random.choice(quotes))
+
+async def cmd_remind(update, context):
+    user_id = update.effective_user.id
+    text = update.message.text.replace('/remind', '').strip()
+    if not text:
+        await update.message.reply_text("⏰ Напиши: `/remind купить хлеб в 15:30`", parse_mode="Markdown")
+        return
+    remind_time = parse_time(text)
+    if not remind_time:
+        await update.message.reply_text("❌ Не понял время. Формат: `в 15:30` или `через 10 минут`", parse_mode="Markdown")
+        return
+    reminder_text = re.sub(r'через \d+ минут|в \d{1,2}:\d{2}', '', text).strip()
+    if not reminder_text:
+        reminder_text = "Напоминание"
+    cursor.execute("INSERT INTO reminders (user_id, text, remind_at, created_at) VALUES (?, ?, ?, ?)",
+                   (user_id, reminder_text, remind_time, datetime.now()))
+    conn.commit()
+    update_stats(user_id, "reminders")
+    await update.message.reply_text(f"✅ Напомню в {remind_time.strftime('%H:%M')}: {reminder_text}")
+
 async def cmd_dice(update, context):
     user_id = update.effective_user.id
     value = random.randint(1, 6)
     dice_faces = ["⚀", "⚁", "⚂", "⚃", "⚄", "⚅"]
-    await update.message.reply_text(f"🎲 Тебе выпало: {dice_faces[value-1]} **{value}**", parse_mode="Markdown")
-    update_user_stats(user_id, "games")
+    await update.message.reply_text(f"🎲 {dice_faces[value-1]} Выпало: **{value}**", parse_mode="Markdown")
+    update_stats(user_id, "games")
 
 async def cmd_coin(update, context):
     user_id = update.effective_user.id
     result = random.choice(["Орёл", "Решка"])
     await update.message.reply_text(f"🪙 **{result}**", parse_mode="Markdown")
-    update_user_stats(user_id, "games")
+    update_stats(user_id, "games")
 
 quiz_questions = [
-    {"question": "Сколько планет в Солнечной системе?", "options": ["7", "8", "9", "10"], "answer": "8"},
-    {"question": "Какой язык программирования самый популярный?", "options": ["Java", "Python", "C++", "JavaScript"], "answer": "Python"},
-    {"question": "Кто создал Telegram?", "options": ["Илон Маск", "Павел Дуров", "Марк Цукерберг", "Билл Гейтс"], "answer": "Павел Дуров"},
-    {"question": "Столица Франции?", "options": ["Лондон", "Берлин", "Париж", "Мадрид"], "answer": "Париж"},
+    {"q": "Сколько планет в Солнечной системе?", "o": ["7", "8", "9", "10"], "a": "8"},
+    {"q": "Кто создал Telegram?", "o": ["Илон Маск", "Павел Дуров", "Марк Цукерберг", "Билл Гейтс"], "a": "Павел Дуров"},
+    {"q": "Столица Франции?", "o": ["Лондон", "Берлин", "Париж", "Мадрид"], "a": "Париж"},
 ]
-
 user_quiz = {}
 
 async def cmd_quiz(update, context):
     user_id = update.effective_user.id
     q = random.choice(quiz_questions)
-    user_quiz[user_id] = {"question": q["question"], "answer": q["answer"], "options": q["options"]}
-    options = "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(q["options"])])
-    await update.message.reply_text(f"❓ **{q['question']}**\n\n{options}\n\n_Ответь номером (1-{len(q['options'])})_", parse_mode="Markdown")
-    update_user_stats(user_id, "games")
+    user_quiz[user_id] = {"question": q["q"], "answer": q["a"], "options": q["o"]}
+    options = "\n".join([f"{i+1}. {opt}" for i, opt in enumerate(q["o"])])
+    await update.message.reply_text(f"❓ {q['q']}\n\n{options}\n\nОтветь номером (1-{len(q['o'])})")
+    update_stats(user_id, "games")
 
 async def cmd_quiz_answer(update, context):
     user_id = update.effective_user.id
     if user_id not in user_quiz:
         return
-    
     try:
-        answer_num = int(update.message.text)
+        num = int(update.message.text)
         q = user_quiz[user_id]
-        options = q["options"]
-        correct = q["answer"]
-        
-        if 1 <= answer_num <= len(options):
-            user_answer = options[answer_num - 1]
-            if user_answer == correct:
-                await update.message.reply_text("✅ **Правильно!** 🎉", parse_mode="Markdown")
+        if 1 <= num <= len(q['options']):
+            user_answer = q['options'][num-1]
+            if user_answer == q['answer']:
+                await update.message.reply_text("✅ Правильно!")
             else:
-                await update.message.reply_text(f"❌ **Неправильно!** Правильный ответ: {correct}", parse_mode="Markdown")
+                await update.message.reply_text(f"❌ Неправильно! Ответ: {q['answer']}")
         else:
-            await update.message.reply_text(f"Введи число от 1 до {len(options)}")
-    except ValueError:
+            await update.message.reply_text(f"Введи число от 1 до {len(q['options'])}")
+    except:
         await update.message.reply_text("Напиши номер ответа цифрой")
-    
     del user_quiz[user_id]
 
-user_number_game = {}
-
-async def cmd_guess(update, context):
-    user_id = update.effective_user.id
-    number = random.randint(1, 100)
-    user_number_game[user_id] = {"number": number, "attempts": 0}
-    await update.message.reply_text("🔢 Я загадал число от 1 до 100. Попробуй угадать! Напиши число.")
-    update_user_stats(user_id, "games")
-
-async def cmd_guess_answer(update, context):
-    user_id = update.effective_user.id
-    if user_id not in user_number_game:
-        return
-    
-    try:
-        guess = int(update.message.text)
-        game = user_number_game[user_id]
-        game["attempts"] += 1
-        number = game["number"]
-        
-        if guess < number:
-            await update.message.reply_text("📈 **Больше!** Попробуй ещё.")
-        elif guess > number:
-            await update.message.reply_text("📉 **Меньше!** Попробуй ещё.")
-        else:
-            await update.message.reply_text(f"🎉 **Поздравляю!** Ты угадал число {number} за {game['attempts']} попыток!")
-            del user_number_game[user_id]
-    except ValueError:
-        await update.message.reply_text("Введи число!")
-
-# ========== НАПОМИНАНИЯ ==========
-async def cmd_remind(update, context):
-    user_id = update.effective_user.id
-    text = update.message.text.replace('/remind', '').strip()
-    
-    if not text:
-        await update.message.reply_text(
-            "⏰ **Как создать напоминание:**\n\n"
-            "• `/remind позвонить маме через 10 минут`\n"
-            "• `/remind купить хлеб в 15:30`\n"
-            "• `/remind сдать проект завтра в 9:00`\n\n"
-            "Или просто напиши: «напомни мне купить хлеб в 15:30»",
-            parse_mode="Markdown"
-        )
-        return
-    
-    remind_time = parse_reminder_time(text)
-    if not remind_time:
-        await update.message.reply_text(
-            "❌ Не понял время. Используй формат:\n"
-            "• `через 10 минут`\n"
-            "• `в 15:30`\n"
-            "• `завтра в 9:00`",
-            parse_mode="Markdown"
-        )
-        return
-    
-    reminder_text = re.sub(r'через \d+ минут|в \d{1,2}:\d{2}|завтра в \d{1,2}:\d{2}', '', text).strip()
-    if not reminder_text:
-        reminder_text = "Напоминание"
-    
-    reminder_id = add_reminder(user_id, reminder_text, remind_time)
-    time_str = remind_time.strftime("%d.%m.%Y в %H:%M")
-    await update.message.reply_text(
-        f"✅ **Напоминание создано!**\n\n"
-        f"📝 {reminder_text}\n"
-        f"⏰ {time_str}\n\n"
-        f"ID: {reminder_id}",
-        parse_mode="Markdown"
-    )
-    update_user_stats(user_id, "reminders")
-
-async def cmd_my_reminders(update, context):
-    user_id = update.effective_user.id
-    reminders = get_active_reminders(user_id)
-    
-    if not reminders:
-        await update.message.reply_text("📭 Нет активных напоминаний.", parse_mode="Markdown")
-        return
-    
-    result = "⏰ **Твои напоминания:**\n\n"
-    for rid, text, remind_at in reminders:
-        time_str = remind_at.strftime("%d.%m.%Y в %H:%M")
-        result += f"**{rid}.** {text}\n   📅 {time_str}\n\n"
-    result += "🗑️ Удалить: `/del_remind [номер]`"
-    await update.message.reply_text(result, parse_mode="Markdown")
-
-async def cmd_del_remind(update, context):
-    user_id = update.effective_user.id
-    if not context.args:
-        await update.message.reply_text("❌ Укажи ID: `/del_remind 1`", parse_mode="Markdown")
-        return
-    try:
-        reminder_id = int(context.args[0])
-        if delete_reminder(reminder_id, user_id):
-            await update.message.reply_text(f"✅ Напоминание {reminder_id} удалено!", parse_mode="Markdown")
-        else:
-            await update.message.reply_text(f"❌ Напоминание {reminder_id} не найдено", parse_mode="Markdown")
-    except ValueError:
-        await update.message.reply_text("❌ ID должен быть числом", parse_mode="Markdown")
-
-async def process_natural_reminder(update, reminder_text, time_str):
-    try:
-        hour, minute = map(int, time_str.split(':'))
-        now = datetime.now()
-        remind_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if remind_time <= now:
-            remind_time += timedelta(days=1)
-        
-        user_id = update.effective_user.id
-        reminder_id = add_reminder(user_id, reminder_text, remind_time)
-        time_str_full = remind_time.strftime("%d.%m.%Y в %H:%M")
-        await update.message.reply_text(
-            f"✅ **Напоминание создано!**\n\n"
-            f"📝 {reminder_text}\n"
-            f"⏰ {time_str_full}\n\n"
-            f"ID: {reminder_id}",
-            parse_mode="Markdown"
-        )
-    except:
-        await update.message.reply_text("❌ Неправильный формат времени")
-
-async def process_natural_reminder_minutes(update, reminder_text, minutes):
-    user_id = update.effective_user.id
-    remind_time = datetime.now() + timedelta(minutes=minutes)
-    reminder_id = add_reminder(user_id, reminder_text, remind_time)
-    time_str_full = remind_time.strftime("%d.%m.%Y в %H:%M")
-    await update.message.reply_text(
-        f"✅ **Напоминание создано!**\n\n"
-        f"📝 {reminder_text}\n"
-        f"⏰ Через {minutes} минут (в {time_str_full})\n\n"
-        f"ID: {reminder_id}",
-        parse_mode="Markdown"
-    )
-
-async def process_natural_reminder_tomorrow(update, reminder_text, time_str):
-    try:
-        hour, minute = map(int, time_str.split(':'))
-        remind_time = datetime.now() + timedelta(days=1)
-        remind_time = remind_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        user_id = update.effective_user.id
-        reminder_id = add_reminder(user_id, reminder_text, remind_time)
-        time_str_full = remind_time.strftime("%d.%m.%Y в %H:%M")
-        await update.message.reply_text(
-            f"✅ **Напоминание создано!**\n\n"
-            f"📝 {reminder_text}\n"
-            f"⏰ {time_str_full}\n\n"
-            f"ID: {reminder_id}",
-            parse_mode="Markdown"
-        )
-    except:
-        await update.message.reply_text("❌ Неправильный формат времени")
-
-# ========== РАСПОЗНАВАНИЕ ГОЛОСА ==========
-async def recognize_speech_yandex(file_path):
-    if not YANDEX_API_KEY or not YANDEX_FOLDER_ID:
-        return None
-    
-    try:
-        audio = AudioSegment.from_ogg(file_path)
-        wav_path = file_path.replace('.ogg', '.wav')
-        audio.export(wav_path, format='wav', parameters=["-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1"])
-        
-        url = "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize"
-        headers = {"Authorization": f"Api-Key {YANDEX_API_KEY}"}
-        
-        with open(wav_path, 'rb') as f:
-            async with aiohttp.ClientSession() as s:
-                async with s.post(url, headers=headers, data=f, timeout=15) as r:
-                    os.remove(wav_path)
-                    if r.status == 200:
-                        data = await r.json()
-                        return data.get('result')
-                    else:
-                        print(f"Yandex ошибка: {r.status}")
-                        return None
-    except Exception as e:
-        print(f"Ошибка: {e}")
-        return None
-
-async def handle_voice(update, context):
-    user_id = update.effective_user.id
-    voice = update.message.voice
-    file = await voice.get_file()
-    file_path = f"temp_voice_{user_id}.ogg"
-    await file.download_to_drive(file_path)
-    
-    await update.message.reply_text("🎤 Распознаю голосовое сообщение...")
-    
-    if not YANDEX_API_KEY or not YANDEX_FOLDER_ID:
-        await update.message.reply_text("❌ Яндекс SpeechKit не настроен")
-        os.remove(file_path)
-        return
-    
-    recognized_text = await recognize_speech_yandex(file_path)
-    
-    if recognized_text:
-        await update.message.reply_text(f"📝 **Вы сказали:**\n{recognized_text[:500]}", parse_mode="Markdown")
-        await update.message.reply_text("💭 Думаю над ответом...")
-        answer = await ask_groq(recognized_text)
-        await update.message.reply_text(answer)
-        
-        history = get_user_history(user_id)
-        history.append({"role": "user", "content": f"[Голос] {recognized_text[:200]}"})
-        history.append({"role": "assistant", "content": answer})
-        save_user_history(user_id, history)
-    else:
-        await update.message.reply_text("❌ Не удалось распознать голосовое сообщение.")
-    
-    os.remove(file_path)
-
 # ========== OCR ==========
-async def recognize_text_from_photo(file_path):
+async def recognize_text(file_path):
     url = "https://api.ocr.space/parse/image"
     with open(file_path, 'rb') as f:
         files = {'file': f}
-        data = {
-            'language': 'rus',
-            'isOverlayRequired': False,
-            'scale': True,
-            'OCREngine': 2,
-            'detectOrientation': True
-        }
-        try:
-            async with aiohttp.ClientSession() as s:
-                async with s.post(url, data=data, files=files, timeout=30) as r:
-                    if r.status == 200:
-                        result = await r.json()
-                        if result.get('IsErroredOnProcessing'):
-                            return None
-                        if result.get('ParsedResults') and len(result['ParsedResults']) > 0:
-                            text = result['ParsedResults'][0]['ParsedText']
-                            if text and len(text.strip()) > 3:
-                                return text.strip()
-                    return None
-        except Exception as e:
-            print(f"OCR ошибка: {e}")
-            return None
+        data = {'language': 'rus', 'OCREngine': 2}
+        async with aiohttp.ClientSession() as s:
+            async with s.post(url, data=data, files=files, timeout=20) as r:
+                if r.status == 200:
+                    result = await r.json()
+                    if result.get('ParsedResults'):
+                        return result['ParsedResults'][0]['ParsedText']
+    return None
 
-# ========== ОСНОВНЫЕ ОБРАБОТЧИКИ ==========
-waiting_for_image = {}
-waiting_for_city = {}
-
-async def start(update, context):
-    user_id = update.effective_user.id
-    waiting_for_image[user_id] = False
-    waiting_for_city[user_id] = False
-    save_user_history(user_id, [])
-    
-    if not get_user_stats(user_id):
-        cursor.execute("INSERT OR REPLACE INTO users (user_id, stats, last_active) VALUES (?, ?, ?)", 
-                       (user_id, json.dumps({"messages": 0, "reminders": 0, "commands": 0, "games": 0, "images": 0}), datetime.now()))
-        conn.commit()
-
-    await update.message.reply_text(
-        "🤍 **Привет! Я марGO — твой умный помощник!**\n\n"
-        "🎨 **Картинка** — нажми кнопку и опиши\n"
-        "🌤️ **Погода** — нажми кнопку и напиши город\n"
-        "🌍 **Переводчик** — нажми кнопку или `/translate текст`\n"
-        "⏰ **Напомнить** — «напомни мне купить хлеб в 15:30»\n"
-        "📰 **Новости** — нажми кнопку и выбери страну\n"
-        "🎮 **Игры** — /dice, /coin, /quiz, /guess\n"
-        "📊 **Статистика** — твоя активность\n"
-        "🎤 **Голос** — отправь голосовое сообщение\n"
-        "📸 **Фото с текстом** — я прочитаю и отвечу\n\n"
-        "💬 **Мои напоминания** — список напоминаний\n"
-        "🗑️ **Удалить** — `/del_remind 1`\n\n"
-        "Просто задавай вопросы — я отвечу!",
-        parse_mode="Markdown",
-        reply_markup=get_keyboard()
-    )
+# ========== ОСНОВНОЙ ОБРАБОТЧИК ==========
+waiting_for = {}
 
 async def handle_photo(update, context):
     user_id = update.effective_user.id
     photo = update.message.photo[-1]
     file = await photo.get_file()
-    file_path = f"temp_{user_id}.jpg"
-    await file.download_to_drive(file_path)
-    
-    await update.message.reply_text("📸 Распознаю текст с фото...")
-    recognized_text = await recognize_text_from_photo(file_path)
-    
-    if recognized_text and recognized_text.strip():
-        await update.message.reply_text(f"📄 **Распознанный текст:**\n{recognized_text[:500]}", parse_mode="Markdown")
-        await update.message.reply_text("💭 Думаю над ответом...")
-        answer = await ask_groq(f"Вот текст с фото. Ответь на вопрос или реши задачу: {recognized_text}")
+    path = f"temp_{user_id}.jpg"
+    await file.download_to_drive(path)
+    await update.message.reply_text("📸 Распознаю текст...")
+    text = await recognize_text(path)
+    os.remove(path)
+    if text:
+        await update.message.reply_text(f"📄 Распознано: {text[:500]}")
+        await update.message.reply_text("💭 Думаю...")
+        save_memory(user_id, "user", text)
+        answer = await ask_groq_with_memory(user_id, text)
+        save_memory(user_id, "assistant", answer)
         await update.message.reply_text(answer)
-        
-        history = get_user_history(user_id)
-        history.append({"role": "user", "content": f"[Фото] {recognized_text[:200]}"})
-        history.append({"role": "assistant", "content": answer})
-        save_user_history(user_id, history)
     else:
-        await update.message.reply_text("❌ Не удалось распознать текст на фото.")
-    
-    os.remove(file_path)
+        await update.message.reply_text("❌ Не удалось распознать текст")
 
 async def handle_message(update, context):
     user_id = update.effective_user.id
     text = update.message.text
-    history = get_user_history(user_id)
-    
-    update_user_stats(user_id, "messages")
+    update_stats(user_id, "messages")
 
-    if user_id not in waiting_for_image:
-        waiting_for_image[user_id] = False
-    if user_id not in waiting_for_city:
-        waiting_for_city[user_id] = False
-
-    if waiting_for_image.get(user_id, False):
+    if waiting_for.get(user_id) == "image":
         await update.message.reply_text("🎨 Рисую...")
         img = await generate_image(text)
         await update.message.reply_photo(img, caption=text)
-        waiting_for_image[user_id] = False
-        update_user_stats(user_id, "images")
+        update_stats(user_id, "images")
+        waiting_for[user_id] = None
         return
 
-    if waiting_for_city.get(user_id, False):
+    if waiting_for.get(user_id) == "city":
         weather = await get_weather(text)
         await update.message.reply_text(weather)
-        waiting_for_city[user_id] = False
+        waiting_for[user_id] = None
         return
 
-    # ===== НОВОСТИ С ВЫБОРОМ СТРАНЫ =====
-    if text == "📰 Новости":
-        keyboard = [
-            [KeyboardButton("🌍 Главные"), KeyboardButton("🇷🇺 Россия")],
-            [KeyboardButton("🇺🇸 США"), KeyboardButton("🇬🇧 Великобритания")],
-            [KeyboardButton("🇫🇷 Франция"), KeyboardButton("🇩🇪 Германия")],
-            [KeyboardButton("🇯🇵 Япония"), KeyboardButton("🇨🇳 Китай")],
-            [KeyboardButton("🔙 Назад")]
-        ]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        await update.message.reply_text("📰 **Выбери страну для новостей:**", parse_mode="Markdown", reply_markup=reply_markup)
-        return
-
-    if text == "🌍 Главные":
-        await cmd_news(update, context, 'us')
-        await update.message.reply_text("Главное меню:", reply_markup=get_keyboard())
-        return
-    if text == "🇷🇺 Россия":
-        await cmd_news(update, context, 'ru')
-        await update.message.reply_text("Главное меню:", reply_markup=get_keyboard())
-        return
-    if text == "🇺🇸 США":
-        await cmd_news(update, context, 'us')
-        await update.message.reply_text("Главное меню:", reply_markup=get_keyboard())
-        return
-    if text == "🇬🇧 Великобритания":
-        await cmd_news(update, context, 'uk')
-        await update.message.reply_text("Главное меню:", reply_markup=get_keyboard())
-        return
-    if text == "🇫🇷 Франция":
-        await cmd_news(update, context, 'fr')
-        await update.message.reply_text("Главное меню:", reply_markup=get_keyboard())
-        return
-    if text == "🇩🇪 Германия":
-        await cmd_news(update, context, 'de')
-        await update.message.reply_text("Главное меню:", reply_markup=get_keyboard())
-        return
-    if text == "🇯🇵 Япония":
-        await cmd_news(update, context, 'jp')
-        await update.message.reply_text("Главное меню:", reply_markup=get_keyboard())
-        return
-    if text == "🇨🇳 Китай":
-        await cmd_news(update, context, 'cn')
-        await update.message.reply_text("Главное меню:", reply_markup=get_keyboard())
-        return
-
-    if text == "🔙 Назад":
-        await update.message.reply_text("Главное меню:", reply_markup=get_keyboard())
-        return
-
-    # ===== ЕСТЕСТВЕННЫЕ КОМАНДЫ =====
-    if re.search(r'(мои|список|покажи)\s+напоминани[яй]', text.lower()):
-        await cmd_my_reminders(update, context)
-        return
-    
-    remind_create_match = re.search(r'(создай|добавь|новое)\s+напоминани[ее]\s+(.+?)\s+на\s+(.+)', text.lower())
-    if remind_create_match:
-        reminder_text = remind_create_match.group(2)
-        time_str = remind_create_match.group(3)
-        await process_natural_reminder(update, reminder_text, time_str)
-        return
-    
-    del_match = re.search(r'(удали|удалить)\s+напоминани[ее]\s+(\d+)', text.lower())
-    if del_match:
-        reminder_id = int(del_match.group(2))
-        if delete_reminder(reminder_id, user_id):
-            await update.message.reply_text(f"✅ Напоминание {reminder_id} удалено!", parse_mode="Markdown")
+    if waiting_for.get(user_id) == "translate":
+        result = await translate(text)
+        if result:
+            await update.message.reply_text(f"🌍 Перевод: {result}")
         else:
-            await update.message.reply_text(f"❌ Напоминание {reminder_id} не найдено", parse_mode="Markdown")
-        return
-    
-    if re.search(r'(моя|мои|покажи)\s+статистик[ау]', text.lower()):
-        await cmd_stats(update, context)
-        return
-    
-    if text.lower().startswith("переведи") or text.lower().startswith("перевод"):
-        text_to_translate = text[text.find(' ')+1:].strip()
-        if text_to_translate:
-            result = await translate_text(text_to_translate, 'ru')
-            if result:
-                await update.message.reply_text(f"🌍 **Перевод:**\n{result}", parse_mode="Markdown")
-            else:
-                await update.message.reply_text("❌ Не удалось перевести")
+            await update.message.reply_text("❌ Ошибка перевода")
+        waiting_for[user_id] = None
         return
 
-    remind_match = re.search(r'напомни мне\s+(.+?)\s+в\s+(\d{1,2}:\d{2})', text.lower())
-    if remind_match:
-        await process_natural_reminder(update, remind_match.group(1), remind_match.group(2))
-        return
-    
-    remind_minutes_match = re.search(r'напомни\s+(.+?)\s+через\s+(\d+)\s*(?:минут|минуты|минуту|час|часа|часов)', text.lower())
-    if remind_minutes_match:
-        minutes = int(remind_minutes_match.group(2))
-        await process_natural_reminder_minutes(update, remind_minutes_match.group(1), minutes)
-        return
-    
-    tomorrow_match = re.search(r'напомнить\s+(.+?)\s+завтра\s+в\s+(\d{1,2}:\d{2})', text.lower())
-    if tomorrow_match:
-        await process_natural_reminder_tomorrow(update, tomorrow_match.group(1), tomorrow_match.group(2))
-        return
-
-    # Кнопки
     if text == "🎨 Картинка":
         await update.message.reply_text("🖌️ Опиши что нарисовать")
-        waiting_for_image[user_id] = True
+        waiting_for[user_id] = "image"
         return
     if text == "🌤️ Погода":
         await update.message.reply_text("🏙️ Напиши город")
-        waiting_for_city[user_id] = True
+        waiting_for[user_id] = "city"
         return
     if text == "🌍 Переводчик":
-        await update.message.reply_text("🌍 **Переводчик**\n\nНапиши текст для перевода на русский.\nИли: `/translate en текст`", parse_mode="Markdown")
+        await update.message.reply_text("🌍 Напиши текст для перевода на русский")
+        waiting_for[user_id] = "translate"
         return
     if text == "⏰ Напомнить":
-        await update.message.reply_text("⏰ **Напиши:** «напомни мне купить хлеб в 15:30»", parse_mode="Markdown")
+        await cmd_remind(update, context)
         return
     if text == "🎮 Игры":
-        await update.message.reply_text(
-            "🎮 **Игры:**\n/dice — кубик\n/coin — орёл/решка\n/quiz — викторина\n/guess — угадай число",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("🎮 /dice — кубик\n/coin — монетка\n/quiz — викторина")
         return
-    if text == "📊 Статистика":
-        await cmd_stats(update, context)
+    if text == "💬 Цитата":
+        await cmd_quote(update, context)
+        return
+    if text == "📊 Профиль":
+        await cmd_profile(update, context)
         return
     if text == "❓ Помощь":
-        await update.message.reply_text(
-            "📋 **Все команды:**\n\n"
-            "🎨 **Картинка** — нажми кнопку\n"
-            "🌤️ **Погода** — нажми кнопку\n"
-            "🌍 **Переводчик** — нажми кнопку или `/translate текст`\n"
-            "⏰ **Напомнить** — «напомни мне...»\n"
-            "📰 **Новости** — нажми кнопку и выбери страну\n"
-            "🎮 **Игры** — /dice, /coin, /quiz, /guess\n"
-            "📊 **Статистика** — твоя активность\n"
-            "🎤 **Голос** — отправь голосовое\n"
-            "📸 **Фото с текстом** — отправь фото\n"
-            "📋 **Мои напоминания** — список\n"
-            "🗑️ **Удалить напоминание** — `/del_remind 1`\n\n"
-            "💬 Просто задавай вопросы!",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("📋 Команды:\n🎨 Картинка\n🌤️ Погода\n🌍 Перевод\n⏰ Напомнить\n/dice, /coin, /quiz")
         return
 
-    # Быстрые команды
     if text.lower().startswith("нарисуй"):
         prompt = text[7:].strip()
         if prompt:
             await update.message.reply_text("🎨 Рисую...")
             img = await generate_image(prompt)
             await update.message.reply_photo(img, caption=prompt)
-            update_user_stats(user_id, "images")
+            update_stats(user_id, "images")
         return
+
     if text.lower().startswith("погода в"):
         city = text[8:].strip()
         weather = await get_weather(city)
         await update.message.reply_text(weather)
         return
 
-    # Обычный вопрос
+    # Умный ответ с памятью
     await update.message.reply_text("💭 Думаю...")
-    history.append({"role": "user", "content": text})
-    answer = await ask_groq_with_memory(text, history)
-    history.append({"role": "assistant", "content": answer})
-    save_user_history(user_id, history)
+    save_memory(user_id, "user", text)
+    answer = await ask_groq_with_memory(user_id, text)
+    save_memory(user_id, "assistant", answer)
     await update.message.reply_text(answer)
 
 # ========== ЗАПУСК ==========
+global application, loop
+
 def main():
     global application, loop
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    
-    threading.Thread(target=run_web, daemon=True).start()
-    threading.Thread(target=keep_alive, daemon=True).start()
+
     threading.Thread(target=run_scheduler, daemon=True).start()
 
     app = Application.builder().token(TOKEN).build()
     application = app
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("profile", cmd_profile))
     app.add_handler(CommandHandler("remind", cmd_remind))
-    app.add_handler(CommandHandler("my_reminders", cmd_my_reminders))
-    app.add_handler(CommandHandler("del_remind", cmd_del_remind))
-    app.add_handler(CommandHandler("translate", cmd_translate))
-    app.add_handler(CommandHandler("news", cmd_news))
-    app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("dice", cmd_dice))
     app.add_handler(CommandHandler("coin", cmd_coin))
     app.add_handler(CommandHandler("quiz", cmd_quiz))
-    app.add_handler(CommandHandler("guess", cmd_guess))
-    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.Regex(r'^[1-4]$'), cmd_quiz_answer))
-    app.add_handler(MessageHandler(filters.Regex(r'^\d+$'), cmd_guess_answer))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("✅ марGO с кнопками новостей запущен!")
+    print("✅ марGO ЛЮТЫЙ АПГРЕЙД запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
