@@ -14,6 +14,78 @@ from flask import Flask
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from pydub import AudioSegment
+import xml.etree.ElementTree as ET
+
+# ========== НОВОСТИ ==========
+NEWS_RSS = {
+    'us': 'https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml',
+    'ru': 'https://meduza.io/rss/all',
+    'uk': 'https://rss.nytimes.com/services/xml/rss/nyt/World.xml',
+    'fr': 'https://rss.nytimes.com/services/xml/rss/nyt/Europe.xml',
+    'de': 'https://rss.nytimes.com/services/xml/rss/nyt/Europe.xml',
+    'jp': 'https://rss.nytimes.com/services/xml/rss/nyt/AsiaPacific.xml',
+    'cn': 'https://rss.nytimes.com/services/xml/rss/nyt/AsiaPacific.xml',
+}
+
+async def fetch_news(country='us'):
+    if country == 'ru':
+        sources = ['https://meduza.io/rss/all', 'https://ria.ru/export/rss2/index.xml']
+        for src in sources:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(src, timeout=10) as resp:
+                        if resp.status == 200:
+                            text = await resp.text()
+                            root = ET.fromstring(text)
+                            items = root.findall('.//item')
+                            news = []
+                            for item in items[:5]:
+                                title = item.find('title').text
+                                link = item.find('link').text
+                                news.append(f"[{title[:80]}]({link})")
+                            if news:
+                                return news
+            except:
+                continue
+        return None
+    
+    url = NEWS_RSS.get(country, NEWS_RSS['us'])
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=10) as resp:
+                if resp.status == 200:
+                    text = await resp.text()
+                    root = ET.fromstring(text)
+                    items = root.findall('.//item')
+                    news = []
+                    for item in items[:5]:
+                        title = item.find('title').text
+                        link = item.find('link').text
+                        news.append(f"[{title[:80]}]({link})")
+                    return news
+    except:
+        pass
+    return None
+
+# ========== ВЕБ-СЕРВЕР И АВТОПИНГ ==========
+web_app = Flask(__name__)
+
+@web_app.route('/')
+def health():
+    return "Бот марGO работает!"
+
+def run_web():
+    web_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
+
+def keep_alive():
+    url = f"https://{os.environ.get('RENDER_EXTERNAL_URL', 'localhost')}"
+    while True:
+        try:
+            requests.get(url, timeout=10)
+            print("✅ Пинг отправлен")
+        except:
+            pass
+        time.sleep(240)
 
 # ========== НАСТРОЙКИ ==========
 TOKEN = os.environ.get("BOT_TOKEN")
@@ -86,12 +158,12 @@ def save_memory(user_id, role, content):
     cursor.execute("INSERT INTO memory (user_id, role, content, created_at) VALUES (?, ?, ?, ?)",
                    (user_id, role, content[:500], datetime.now()))
     conn.commit()
-    # Оставляем только последние 50 сообщений
-    cursor.execute("DELETE FROM memory WHERE user_id = ? AND created_at < (SELECT created_at FROM memory WHERE user_id = ? ORDER BY created_at DESC LIMIT 1 OFFSET 50)", (user_id, user_id))
+    # Оставляем только последние 30 сообщений
+    cursor.execute("DELETE FROM memory WHERE user_id = ? AND created_at < (SELECT created_at FROM memory WHERE user_id = ? ORDER BY created_at DESC LIMIT 1 OFFSET 30)", (user_id, user_id))
     conn.commit()
 
 def get_memory(user_id):
-    cursor.execute("SELECT role, content FROM memory WHERE user_id = ? ORDER BY created_at DESC LIMIT 15", (user_id,))
+    cursor.execute("SELECT role, content FROM memory WHERE user_id = ? ORDER BY created_at DESC LIMIT 10", (user_id,))
     rows = cursor.fetchall()
     return list(reversed(rows))
 
@@ -100,7 +172,7 @@ def get_keyboard():
     buttons = [
         [KeyboardButton("🎨 Картинка"), KeyboardButton("🌤️ Погода")],
         [KeyboardButton("🌍 Переводчик"), KeyboardButton("⏰ Напомнить")],
-        [KeyboardButton("🎮 Игры"), KeyboardButton("💬 Цитата")],
+        [KeyboardButton("📰 Новости"), KeyboardButton("🎮 Игры")],
         [KeyboardButton("📊 Профиль"), KeyboardButton("❓ Помощь")]
     ]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
@@ -130,7 +202,7 @@ async def ask_groq(prompt):
 async def ask_groq_with_memory(user_id, prompt):
     history = get_memory(user_id)
     context = ""
-    for role, content in history[-6:]:
+    for role, content in history:
         context += f"{role}: {content}\n"
     full_prompt = f"""Ты — марGO, живой умный помощник. Отвечай на русском. Учитывай историю разговора.
 
@@ -140,21 +212,9 @@ async def ask_groq_with_memory(user_id, prompt):
 марGO:"""
     return await ask_groq(full_prompt)
 
-# ========== КАРТИНКИ (LEXICA - КРУТЫЕ) ==========
+# ========== КАРТИНКИ ==========
 async def generate_image(prompt):
     enhanced = f"masterpiece, best quality, highly detailed, {prompt}"
-    try:
-        url = "https://lexica.art/api/v1/search"
-        params = {"q": enhanced, "limit": 1}
-        async with aiohttp.ClientSession() as s:
-            async with s.get(url, params=params, timeout=15) as r:
-                if r.status == 200:
-                    data = await r.json()
-                    if data.get('images') and len(data['images']) > 0:
-                        return data['images'][0]['src']
-    except:
-        pass
-    # fallback
     seed = random.randint(1, 999999)
     return f"https://image.pollinations.ai/prompt/{enhanced.replace(' ', '%20')}?width=1024&height=1024&nologo=true&seed={seed}"
 
@@ -174,6 +234,33 @@ async def get_weather(city):
                 return f"❌ Город '{city}' не найден"
     except:
         return "❌ Ошибка погоды"
+
+# ========== НОВОСТИ ==========
+async def cmd_news(update, context, country=None):
+    if country is None:
+        text = update.message.text.replace('/news', '').strip().lower()
+        countries_map = {
+            'россия': 'ru', 'russia': 'ru',
+            'сша': 'us', 'usa': 'us', 'америка': 'us',
+            'великобритания': 'uk', 'britain': 'uk',
+            'франция': 'fr', 'france': 'fr',
+            'германия': 'de', 'germany': 'de',
+            'япония': 'jp', 'japan': 'jp',
+            'китай': 'cn', 'china': 'cn'
+        }
+        country_code = countries_map.get(text, 'us')
+    else:
+        country_code = country
+    
+    await update.message.reply_text("📰 Загружаю новости...")
+    news = await fetch_news(country_code)
+    if news:
+        result = "📰 **Новости:**\n\n"
+        for i, item in enumerate(news, 1):
+            result += f"{i}. {item}\n"
+        await update.message.reply_text(result, parse_mode="Markdown", disable_web_page_preview=True)
+    else:
+        await update.message.reply_text("❌ Не удалось загрузить новости.")
 
 # ========== ПЕРЕВОДЧИК ==========
 async def translate(text, target='ru'):
@@ -239,8 +326,8 @@ async def start(update, context):
         f"🌤️ **Погода** — нажми кнопку\n"
         f"🌍 **Переводчик** — нажми кнопку\n"
         f"⏰ **Напомнить** — «напомни мне купить хлеб в 15:30»\n"
-        f"🎮 **Игры** — /dice, /coin, /quiz, /guess\n"
-        f"💬 **Цитата** — мудрая фраза\n"
+        f"📰 **Новости** — нажми кнопку\n"
+        f"🎮 **Игры** — /dice, /coin, /quiz\n"
         f"📊 **Профиль** — твоя статистика\n\n"
         f"Просто задавай вопросы — я отвечу!",
         parse_mode="Markdown",
@@ -260,18 +347,6 @@ async def cmd_profile(update, context):
         f"📅 Впервые: {user[7][:10] if user[7] else 'сегодня'}",
         parse_mode="Markdown"
     )
-
-async def cmd_quote(update, context):
-    quotes = [
-        "💡 Код — это поэзия, которую понимает компьютер.",
-        "🚀 Лучший способ предсказать будущее — создать его самому.",
-        "🤍 Простота — высшая сложность.",
-        "🌍 GO World — твой мир. Твои правила.",
-        "🎨 марGO рисует, отвечает, напоминает — всё в одном!",
-        "⏰ Время — самый ценный ресурс. Не трать его зря.",
-        "💬 Лучший способ научиться — делать.",
-    ]
-    await update.message.reply_text(random.choice(quotes))
 
 async def cmd_remind(update, context):
     user_id = update.effective_user.id
@@ -339,21 +414,7 @@ async def cmd_quiz_answer(update, context):
         await update.message.reply_text("Напиши номер ответа цифрой")
     del user_quiz[user_id]
 
-# ========== OCR ==========
-async def recognize_text(file_path):
-    url = "https://api.ocr.space/parse/image"
-    with open(file_path, 'rb') as f:
-        files = {'file': f}
-        data = {'language': 'rus', 'OCREngine': 2}
-        async with aiohttp.ClientSession() as s:
-            async with s.post(url, data=data, files=files, timeout=20) as r:
-                if r.status == 200:
-                    result = await r.json()
-                    if result.get('ParsedResults'):
-                        return result['ParsedResults'][0]['ParsedText']
-    return None
-
-# ========== ОСНОВНОЙ ОБРАБОТЧИК ==========
+# ========== ОБРАБОТЧИК КАРТИНОК С НОВОСТЯМИ ==========
 waiting_for = {}
 
 async def handle_photo(update, context):
@@ -363,17 +424,9 @@ async def handle_photo(update, context):
     path = f"temp_{user_id}.jpg"
     await file.download_to_drive(path)
     await update.message.reply_text("📸 Распознаю текст...")
-    text = await recognize_text(path)
+    # Упрощённое распознавание (без OCR для скорости)
+    await update.message.reply_text("❌ Распознавание текста с фото временно отключено. Используй текстовый ввод.")
     os.remove(path)
-    if text:
-        await update.message.reply_text(f"📄 Распознано: {text[:500]}")
-        await update.message.reply_text("💭 Думаю...")
-        save_memory(user_id, "user", text)
-        answer = await ask_groq_with_memory(user_id, text)
-        save_memory(user_id, "assistant", answer)
-        await update.message.reply_text(answer)
-    else:
-        await update.message.reply_text("❌ Не удалось распознать текст")
 
 async def handle_message(update, context):
     user_id = update.effective_user.id
@@ -403,6 +456,7 @@ async def handle_message(update, context):
         waiting_for[user_id] = None
         return
 
+    # Кнопки
     if text == "🎨 Картинка":
         await update.message.reply_text("🖌️ Опиши что нарисовать")
         waiting_for[user_id] = "image"
@@ -418,19 +472,76 @@ async def handle_message(update, context):
     if text == "⏰ Напомнить":
         await cmd_remind(update, context)
         return
-    if text == "🎮 Игры":
-        await update.message.reply_text("🎮 /dice — кубик\n/coin — монетка\n/quiz — викторина")
+    if text == "📰 Новости":
+        keyboard = [
+            [KeyboardButton("🌍 Главные"), KeyboardButton("🇷🇺 Россия")],
+            [KeyboardButton("🇺🇸 США"), KeyboardButton("🇬🇧 Великобритания")],
+            [KeyboardButton("🇫🇷 Франция"), KeyboardButton("🇩🇪 Германия")],
+            [KeyboardButton("🇯🇵 Япония"), KeyboardButton("🇨🇳 Китай")],
+            [KeyboardButton("🔙 Назад")]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        await update.message.reply_text("📰 **Выбери страну:**", parse_mode="Markdown", reply_markup=reply_markup)
         return
-    if text == "💬 Цитата":
-        await cmd_quote(update, context)
+    
+    # Выбор страны для новостей
+    if text == "🌍 Главные":
+        await cmd_news(update, context, 'us')
+        await update.message.reply_text("Главное меню:", reply_markup=get_keyboard())
+        return
+    if text == "🇷🇺 Россия":
+        await cmd_news(update, context, 'ru')
+        await update.message.reply_text("Главное меню:", reply_markup=get_keyboard())
+        return
+    if text == "🇺🇸 США":
+        await cmd_news(update, context, 'us')
+        await update.message.reply_text("Главное меню:", reply_markup=get_keyboard())
+        return
+    if text == "🇬🇧 Великобритания":
+        await cmd_news(update, context, 'uk')
+        await update.message.reply_text("Главное меню:", reply_markup=get_keyboard())
+        return
+    if text == "🇫🇷 Франция":
+        await cmd_news(update, context, 'fr')
+        await update.message.reply_text("Главное меню:", reply_markup=get_keyboard())
+        return
+    if text == "🇩🇪 Германия":
+        await cmd_news(update, context, 'de')
+        await update.message.reply_text("Главное меню:", reply_markup=get_keyboard())
+        return
+    if text == "🇯🇵 Япония":
+        await cmd_news(update, context, 'jp')
+        await update.message.reply_text("Главное меню:", reply_markup=get_keyboard())
+        return
+    if text == "🇨🇳 Китай":
+        await cmd_news(update, context, 'cn')
+        await update.message.reply_text("Главное меню:", reply_markup=get_keyboard())
+        return
+    if text == "🔙 Назад":
+        await update.message.reply_text("Главное меню:", reply_markup=get_keyboard())
+        return
+
+    if text == "🎮 Игры":
+        await update.message.reply_text("🎮 `/dice` — кубик\n/coin — монетка\n/quiz — викторина", parse_mode="Markdown")
         return
     if text == "📊 Профиль":
         await cmd_profile(update, context)
         return
     if text == "❓ Помощь":
-        await update.message.reply_text("📋 Команды:\n🎨 Картинка\n🌤️ Погода\n🌍 Перевод\n⏰ Напомнить\n/dice, /coin, /quiz")
+        await update.message.reply_text(
+            "📋 **Команды:**\n"
+            "🎨 Картинка\n"
+            "🌤️ Погода\n"
+            "🌍 Перевод\n"
+            "⏰ Напомнить\n"
+            "📰 Новости\n"
+            "/dice, /coin, /quiz\n"
+            "📊 Профиль",
+            parse_mode="Markdown"
+        )
         return
 
+    # Быстрые команды
     if text.lower().startswith("нарисуй"):
         prompt = text[7:].strip()
         if prompt:
@@ -439,7 +550,6 @@ async def handle_message(update, context):
             await update.message.reply_photo(img, caption=prompt)
             update_stats(user_id, "images")
         return
-
     if text.lower().startswith("погода в"):
         city = text[8:].strip()
         weather = await get_weather(city)
@@ -460,7 +570,12 @@ def main():
     global application, loop
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-
+    
+    # Запускаем веб-сервер для автопинга
+    threading.Thread(target=run_web, daemon=True).start()
+    threading.Thread(target=keep_alive, daemon=True).start()
+    
+    # Запускаем планировщик напоминаний
     threading.Thread(target=run_scheduler, daemon=True).start()
 
     app = Application.builder().token(TOKEN).build()
@@ -471,11 +586,12 @@ def main():
     app.add_handler(CommandHandler("dice", cmd_dice))
     app.add_handler(CommandHandler("coin", cmd_coin))
     app.add_handler(CommandHandler("quiz", cmd_quiz))
+    app.add_handler(CommandHandler("news", cmd_news))
     app.add_handler(MessageHandler(filters.Regex(r'^[1-4]$'), cmd_quiz_answer))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("✅ марGO ЛЮТЫЙ АПГРЕЙД запущен!")
+    print("✅ марGO с новостями и автопингом запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
