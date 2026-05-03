@@ -593,6 +593,33 @@ def main():
 
     print("✅ марGO с новостями и автопингом запущен!")
     app.run_polling()
+from flask import Flask, send_file
+import io
+import sqlite3
+import os
 
+# Создаём веб-сервер для бекапа (если ещё нет)
+web_app = Flask(__name__)
+
+@web_app.route('/')
+def health():
+    return "Бот марGO работает!"
+
+@web_app.route('/download_db')
+def download_db():
+    try:
+        conn = sqlite3.connect('margo.db')
+        with io.StringIO() as f:
+            for line in conn.iterdump():
+                f.write(line + '\n')
+            f.seek(0)
+            data = f.read()
+        conn.close()
+        return data
+    except Exception as e:
+        return f"Ошибка: {str(e)}", 500
+
+def run_web():
+    web_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
 if __name__ == "__main__":
     main()
