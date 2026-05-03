@@ -1,0 +1,22 @@
+name: Еженедельный бекап базы данных
+
+on:
+  schedule:
+    - cron: '0 0 * * 0'   # каждое воскресенье в 00:00
+  workflow_dispatch:        # можно запустить вручную
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Скачать базу данных через временный роут
+        run: |
+          curl -o margo_backup.sql https://go-world.onrender.com/download_db
+      
+      - name: Загрузить бекап вArtifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: margo-db-backup-$(date +'%Y-%m-%d')
+          path: margo_backup.sql
+          retention-days: 30
