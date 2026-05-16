@@ -12,6 +12,7 @@ import re
 from datetime import datetime, timedelta
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import xml.etree.ElementTree as ET
 
 # ========== НАСТРОЙКИ ==========
 TOKEN = os.environ.get("BOT_TOKEN")
@@ -23,18 +24,85 @@ if not TOKEN:
 
 logging.basicConfig(level=logging.INFO)
 
+# ========== RSS ДЛЯ НОВОСТЕЙ ==========
+NEWS_RSS = {
+    'us': 'https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml',
+    'ru': 'https://meduza.io/rss/all',
+    'uk': 'https://rss.nytimes.com/services/xml/rss/nyt/World.xml',
+    'fr': 'https://rss.nytimes.com/services/xml/rss/nyt/Europe.xml',
+    'de': 'https://rss.nytimes.com/services/xml/rss/nyt/Europe.xml',
+    'jp': 'https://rss.nytimes.com/services/xml/rss/nyt/AsiaPacific.xml',
+    'cn': 'https://rss.nytimes.com/services/xml/rss/nyt/AsiaPacific.xml',
+}
+
+async def fetch_news(country='us'):
+    url = NEWS_RSS.get(country, NEWS_RSS['us'])
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=10) as resp:
+                if resp.status == 200:
+                    text = await resp.text()
+                    root = ET.fromstring(text)
+                    items = root.findall('.//item')
+                    news = []
+                    for item in items[:5]:
+                        title = item.find('title').text
+                        link = item.find('link').text
+                        news.append(f"[{title[:80]}]({link})")
+                    return news
+    except:
+        pass
+    return None
+
+async def cmd_news(update, context, country=None):
+    if country is None:
+        text = update.message.text.replace('/news', '').strip().lower()
+        countries_map = {
+            'россия': 'ru', 'russia': 'ru',
+            'сша': 'us', 'usa': 'us', 'америка': 'us',
+            'великобритания': 'uk', 'britain': 'uk', 'англия': 'uk',
+            'франция': 'fr', 'france': 'fr',
+            'германия': 'de', 'germany': 'de',
+            'япония': 'jp', 'japan': 'jp',
+            'китай': 'cn', 'china': 'cn'
+        }
+        country_code = countries_map.get(text, 'us')
+    else:
+        country_code = country
+    
+    await update.message.reply_text("📰 Загружаю новости...")
+    news = await fetch_news(country_code)
+    
+    if news:
+        result = "📰 **Новости:**\n\n"
+        for i, item in enumerate(news, 1):
+            result += f"{i}. {item}\n"
+        await update.message.reply_text(result, parse_mode="Markdown", disable_web_page_preview=True)
+    else:
+        await update.message.reply_text("❌ Не удалось загрузить новости. Попробуй позже.")
+
 # ========== КЛАВИАТУРА ==========
 def get_main_keyboard():
     buttons = [
         [KeyboardButton("🎨 Картинка"), KeyboardButton("🌤️ Погода")],
-        [KeyboardButton("❓ Помощь")]
+        [KeyboardButton("📰 Новости"), KeyboardButton("❓ Помощь")]
     ]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
 def get_image_keyboard():
     buttons = [
         [KeyboardButton("❌ Отмена"), KeyboardButton("🎨 Картинка")],
-        [KeyboardButton("🌤️ Погода"), KeyboardButton("❓ Помощь")]
+        [KeyboardButton("🌤️ Погода"), KeyboardButton("📰 Новости"), KeyboardButton("❓ Помощь")]
+    ]
+    return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
+
+def get_news_keyboard():
+    buttons = [
+        [KeyboardButton("🌍 Главные"), KeyboardButton("🇷🇺 Россия")],
+        [KeyboardButton("🇺🇸 США"), KeyboardButton("🇬🇧 Великобритания")],
+        [KeyboardButton("🇫🇷 Франция"), KeyboardButton("🇩🇪 Германия")],
+        [KeyboardButton("🇯🇵 Япония"), KeyboardButton("🇨🇳 Китай")],
+        [KeyboardButton("🔙 Назад")]
     ]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
@@ -92,8 +160,9 @@ async def start(update, context):
     waiting_for_city[user_id] = False
     await update.message.reply_text(
         "🤍 Привет! Я марGO — твой помощник.\n\n"
-        "🎨 **Картинка** — нажми кнопку и опиши (или напиши «нарисуй кота»)\n"
-        "🌤️ **Погода** — нажми кнопку и напиши город\n\n"
+        "🎨 **Картинка** — нажми кнопку и опиши\n"
+        "🌤️ **Погода** — нажми кнопку и напиши город\n"
+        "📰 **Новости** — нажми кнопку и выбери страну\n\n"
         "💬 **Вопрос** — просто спроси\n\n"
         "❌ **Отмена** — выйти из режима картинки",
         reply_markup=get_main_keyboard()
@@ -108,14 +177,56 @@ async def handle_message(update, context):
     if user_id not in waiting_for_city:
         waiting_for_city[user_id] = False
 
-    # ===== ОТМЕНА (ВСЕГДА РАБОТАЕТ) =====
+    # ===== НОВОСТИ (ВЫБОР СТРАНЫ) =====
+    if text == "📰 Новости":
+        await update.message.reply_text(
+            "📰 **Выбери страну:**",
+            reply_markup=get_news_keyboard()
+        )
+        return
+
+    if text == "🌍 Главные":
+        await cmd_news(update, context, 'us')
+        await update.message.reply_text("Главное меню:", reply_markup=get_main_keyboard())
+        return
+    if text == "🇷🇺 Россия":
+        await cmd_news(update, context, 'ru')
+        await update.message.reply_text("Главное меню:", reply_markup=get_main_keyboard())
+        return
+    if text == "🇺🇸 США":
+        await cmd_news(update, context, 'us')
+        await update.message.reply_text("Главное меню:", reply_markup=get_main_keyboard())
+        return
+    if text == "🇬🇧 Великобритания":
+        await cmd_news(update, context, 'uk')
+        await update.message.reply_text("Главное меню:", reply_markup=get_main_keyboard())
+        return
+    if text == "🇫🇷 Франция":
+        await cmd_news(update, context, 'fr')
+        await update.message.reply_text("Главное меню:", reply_markup=get_main_keyboard())
+        return
+    if text == "🇩🇪 Германия":
+        await cmd_news(update, context, 'de')
+        await update.message.reply_text("Главное меню:", reply_markup=get_main_keyboard())
+        return
+    if text == "🇯🇵 Япония":
+        await cmd_news(update, context, 'jp')
+        await update.message.reply_text("Главное меню:", reply_markup=get_main_keyboard())
+        return
+    if text == "🇨🇳 Китай":
+        await cmd_news(update, context, 'cn')
+        await update.message.reply_text("Главное меню:", reply_markup=get_main_keyboard())
+        return
+
+    if text == "🔙 Назад":
+        await update.message.reply_text("Главное меню:", reply_markup=get_main_keyboard())
+        return
+
+    # ===== ОТМЕНА =====
     if text.lower() == "отмена":
         waiting_for_image[user_id] = False
         waiting_for_city[user_id] = False
-        await update.message.reply_text(
-            "✅ Режим отменён. Возвращаюсь в главное меню.",
-            reply_markup=get_main_keyboard()
-        )
+        await update.message.reply_text("✅ Режим отменён.", reply_markup=get_main_keyboard())
         return
 
     # ===== РЕЖИМ ОЖИДАНИЯ КАРТИНКИ =====
@@ -137,9 +248,7 @@ async def handle_message(update, context):
     # ===== КНОПКА "КАРТИНКА" =====
     if text == "🎨 Картинка":
         await update.message.reply_text(
-            "🖌️ Опиши, что нарисовать.\n"
-            "Например: «кот в космосе»\n\n"
-            "❌ Напиши «отмена», чтобы выйти.",
+            "🖌️ Опиши, что нарисовать.\nНапример: «кот в космосе»\n\n❌ «отмена» — выйти",
             reply_markup=get_image_keyboard()
         )
         waiting_for_image[user_id] = True
@@ -157,6 +266,7 @@ async def handle_message(update, context):
             "📋 **Что умеет марGO:**\n\n"
             "🎨 **Картинка** — нажми кнопку и опиши\n"
             "🌤️ **Погода** — нажми кнопку и напиши город\n"
+            "📰 **Новости** — нажми кнопку и выбери страну\n"
             "💬 **Вопрос** — просто напиши\n"
             "❌ **Отмена** — выйти из режима картинки\n\n"
             "**Быстрые команды:**\n"
@@ -195,7 +305,7 @@ def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("✅ марGO с нормальной отменой запущена!")
+    print("✅ марGO с новостями запущена!")
     app.run_polling()
 
 if __name__ == "__main__":
