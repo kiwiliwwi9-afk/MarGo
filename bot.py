@@ -117,9 +117,9 @@ def get_user(user_id):
     row = cursor.fetchone()
     if not row:
         cursor.execute('''
-            INSERT INTO users (user_id, created_at, last_active)
-            VALUES (?, ?, ?)
-        ''', (user_id, datetime.now(), datetime.now()))
+            INSERT INTO users (user_id, name, created_at, last_active)
+            VALUES (?, ?, ?, ?)
+        ''', (user_id, "друг", datetime.now(), datetime.now()))
         conn.commit()
         cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
         row = cursor.fetchone()
@@ -640,11 +640,20 @@ waiting_for_reminder = {}
 
 async def start(update, context):
     user_id = update.effective_user.id
+    
+    # Сохраняем пользователя в БД
+    cursor.execute('''
+        INSERT OR IGNORE INTO users (user_id, name, created_at, last_active)
+        VALUES (?, ?, ?, ?)
+    ''', (user_id, update.effective_user.first_name, datetime.now(), datetime.now()))
+    conn.commit()
+    
     waiting_for_image[user_id] = False
     waiting_for_city[user_id] = False
     waiting_for_translate[user_id] = False
     waiting_for_reminder[user_id] = False
     save_memory(user_id, "user", "/start")
+    
     await update.message.reply_text(
         "🤍 **Привет! Я марGO — твой умный помощник!**\n\n"
         "🎨 **Картинка** — нажми кнопку и опиши\n"
@@ -674,25 +683,6 @@ async def handle_message(update, context):
         waiting_for_translate[user_id] = False
     if user_id not in waiting_for_reminder:
         waiting_for_reminder[user_id] = False
-
-    # ===== ОБРАБОТКА ОТВЕТОВ НА ОПРОС =====
-    if user_id != ADMIN_ID:
-        cursor.execute("SELECT * FROM poll_answers WHERE user_id = ?", (user_id,))
-        if not cursor.fetchone():
-            cursor.execute("INSERT INTO poll_answers (user_id, username, answer, created_at) VALUES (?, ?, ?, ?)",
-                           (user_id, update.effective_user.username or "без username", text, datetime.now()))
-            conn.commit()
-            
-            await context.bot.send_message(
-                chat_id=ADMIN_ID,
-                text=f"📊 **Новый ответ на опрос!**\n\n"
-                     f"👤 @{update.effective_user.username or 'без username'}\n"
-                     f"🆔 {user_id}\n\n"
-                     f"📝 {text}"
-            )
-            
-            await update.message.reply_text("✅ Спасибо за ответ! Твоё мнение поможет улучшить марGO 🤍")
-            return
 
     # ===== ОТМЕНА =====
     if text.lower() == "отмена":
