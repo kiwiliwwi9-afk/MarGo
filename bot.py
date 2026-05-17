@@ -12,7 +12,6 @@ import re
 from datetime import datetime, timedelta
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from pydub import AudioSegment
 import xml.etree.ElementTree as ET
 
 # ========== RSS ДЛЯ НОВОСТЕЙ ==========
@@ -49,8 +48,6 @@ async def fetch_news(country='us'):
 TOKEN = os.environ.get("BOT_TOKEN")
 GROQ_KEY = os.environ.get("GROQ_KEY")
 OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY")
-YANDEX_API_KEY = os.environ.get("YANDEX_API_KEY")
-YANDEX_FOLDER_ID = os.environ.get("YANDEX_FOLDER_ID")
 
 if not TOKEN:
     raise ValueError("BOT_TOKEN не задан")
@@ -274,7 +271,7 @@ async def generate_image(prompt):
     url = f"https://image.pollinations.ai/prompt/{enhanced.replace(' ', '%20')}?width=1024&height=1024&nologo=true&seed={seed}"
     return url
 
-# ========== ПОГОДА ==========
+# ========== ПОГОДА (БЕЗ ПОДСКАЗКИ) ==========
 async def get_weather(city):
     if not OPENWEATHER_KEY:
         return "🔌 Погода не настроена"
@@ -294,16 +291,22 @@ async def get_weather(city):
 # ========== ПЕРЕВОДЧИК ==========
 async def translate_text(text, target='ru'):
     url = "https://translate.googleapis.com/translate_a/single"
-    params = {'client': 'gtx', 'sl': 'auto', 'tl': target, 'dt': 't', 'q': text}
+    params = {
+        'client': 'gtx',
+        'sl': 'auto',
+        'tl': target,
+        'dt': 't',
+        'q': text
+    }
     try:
         async with aiohttp.ClientSession() as s:
             async with s.get(url, params=params, timeout=10) as r:
                 if r.status == 200:
                     data = await r.json()
                     return data[0][0][0]
+                return None
     except:
-        pass
-    return None
+        return None
 
 # ========== НОВОСТИ ==========
 async def cmd_news(update, context, country=None):
@@ -443,6 +446,25 @@ async def process_natural_reminder_minutes(update, reminder_text, minutes):
         f"ID: {reminder_id}",
         parse_mode="Markdown"
     )
+    update_stats(user_id, "reminders")
+
+async def process_natural_reminder_tomorrow(update, reminder_text, time_str):
+    try:
+        hour, minute = map(int, time_str.split(':'))
+        remind_time = datetime.now() + timedelta(days=1)
+        remind_time = remind_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        user_id = update.effective_user.id
+        reminder_id = add_reminder(user_id, reminder_text, remind_time)
+        time_str_full = remind_time.strftime("%d.%m.%Y в %H:%M")
+        await update.message.reply_text(
+            f"✅ **Напоминание создано!**\n\n"
+            f"📝 {reminder_text}\n"
+            f"⏰ {time_str_full}\n\n"
+            f"ID: {reminder_id}",
+            parse_mode="Markdown"
+        )
+    except:
+        await update.message.reply_text("❌ Неправильный формат времени")
 
 # ========== ИГРЫ ==========
 async def cmd_dice(update, context):
@@ -520,40 +542,25 @@ async def cmd_guess_answer(update, context):
     except ValueError:
         await update.message.reply_text("Введи число!")
 
-# ========== ЕСТЕСТВЕННЫЕ НАПОМИНАНИЯ ==========
-async def process_natural_reminder_tomorrow(update, reminder_text, time_str):
-    try:
-        hour, minute = map(int, time_str.split(':'))
-        remind_time = datetime.now() + timedelta(days=1)
-        remind_time = remind_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        user_id = update.effective_user.id
-        reminder_id = add_reminder(user_id, reminder_text, remind_time)
-        time_str_full = remind_time.strftime("%d.%m.%Y в %H:%M")
-        await update.message.reply_text(
-            f"✅ **Напоминание создано!**\n\n"
-            f"📝 {reminder_text}\n"
-            f"⏰ {time_str_full}\n\n"
-            f"ID: {reminder_id}",
-            parse_mode="Markdown"
-        )
-    except:
-        await update.message.reply_text("❌ Неправильный формат времени")
-
 # ========== ОСНОВНЫЕ ОБРАБОТЧИКИ ==========
 waiting_for_image = {}
 waiting_for_city = {}
+waiting_for_translate = {}
+waiting_for_reminder = {}
 
 async def start(update, context):
     user_id = update.effective_user.id
     waiting_for_image[user_id] = False
     waiting_for_city[user_id] = False
+    waiting_for_translate[user_id] = False
+    waiting_for_reminder[user_id] = False
     save_memory(user_id, "user", "/start")
     await update.message.reply_text(
         "🤍 **Привет! Я марGO — твой умный помощник!**\n\n"
         "🎨 **Картинка** — нажми кнопку и опиши\n"
         "🌤️ **Погода** — нажми кнопку и напиши город\n"
         "🌍 **Переводчик** — нажми кнопку и напиши текст\n"
-        "⏰ **Напомнить** — «напомни мне купить хлеб в 15:30»\n"
+        "⏰ **Напомнить** — нажми кнопку и напиши «в 15:30» или «через 10 минут»\n"
         "📰 **Новости** — нажми кнопку и выбери страну\n"
         "🎮 **Игры** — /dice, /coin, /quiz, /guess\n"
         "💬 **Цитата** — мудрая фраза\n"
@@ -573,12 +580,34 @@ async def handle_message(update, context):
         waiting_for_image[user_id] = False
     if user_id not in waiting_for_city:
         waiting_for_city[user_id] = False
+    if user_id not in waiting_for_translate:
+        waiting_for_translate[user_id] = False
+    if user_id not in waiting_for_reminder:
+        waiting_for_reminder[user_id] = False
 
     # ===== ОТМЕНА =====
     if text.lower() == "отмена":
         waiting_for_image[user_id] = False
         waiting_for_city[user_id] = False
+        waiting_for_translate[user_id] = False
+        waiting_for_reminder[user_id] = False
         await update.message.reply_text("✅ Режим отменён.", reply_markup=get_keyboard())
+        return
+
+    # ===== РЕЖИМ НАПОМИНАНИЯ =====
+    if waiting_for_reminder.get(user_id, False):
+        await cmd_remind(update, context)
+        waiting_for_reminder[user_id] = False
+        return
+
+    # ===== РЕЖИМ ПЕРЕВОДА =====
+    if waiting_for_translate.get(user_id, False):
+        result = await translate_text(text, 'ru')
+        if result:
+            await update.message.reply_text(f"🌍 Перевод: {result}")
+        else:
+            await update.message.reply_text("❌ Не удалось перевести. Попробуй позже.")
+        waiting_for_translate[user_id] = False
         return
 
     # ===== НОВОСТИ =====
@@ -632,10 +661,11 @@ async def handle_message(update, context):
         return
     if text == "🌍 Переводчик":
         await update.message.reply_text("🌍 Напиши текст для перевода на русский")
-        waiting_for_city[user_id] = "translate"
+        waiting_for_translate[user_id] = True
         return
     if text == "⏰ Напомнить":
-        await cmd_remind(update, context)
+        await update.message.reply_text("⏰ Напиши в формате: `в 15:30` или `через 10 минут`", parse_mode="Markdown")
+        waiting_for_reminder[user_id] = True
         return
     if text == "🎮 Игры":
         await update.message.reply_text("🎮 /dice — кубик\n/coin — монетка\n/quiz — викторина\n/guess — угадай число")
