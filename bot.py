@@ -188,9 +188,8 @@ def parse_reminder_time(text):
     return None
 
 # ========== ПЛАНИРОВЩИК НАПОМИНАНИЙ ==========
-reminder_running = False
 application = None
-loop = None
+reminder_running = False
 
 def check_and_send_reminders():
     due_reminders = get_due_reminders()
@@ -202,7 +201,7 @@ def check_and_send_reminders():
                     text=f"⏰ **Напоминание!**\n\n{text}",
                     parse_mode="Markdown"
                 ),
-                loop
+                asyncio.get_event_loop()
             )
             print(f"✅ Напоминание {reminder_id} отправлено")
         except Exception as e:
@@ -533,7 +532,7 @@ async def cmd_start_poll(update, context):
         sent = asyncio.run(send_poll_to_all())
         asyncio.run_coroutine_threadsafe(
             update.message.reply_text(f"✅ Опрос отправлен {sent} пользователям!"),
-            loop
+            asyncio.get_event_loop()
         )
     
     threading.Thread(target=run_poll).start()
@@ -550,10 +549,14 @@ async def cmd_check_users(update, context):
     cursor.execute("SELECT COUNT(*) FROM poll_sent")
     sent_count = cursor.fetchone()[0]
     
+    cursor.execute("SELECT COUNT(*) FROM poll_answers")
+    answer_count = cursor.fetchone()[0]
+    
     await update.message.reply_text(
         f"📊 Статистика:\n"
         f"👥 Пользователей в БД: {count}\n"
-        f"📨 Опросов отправлено: {sent_count}"
+        f"📨 Опросов отправлено: {sent_count}\n"
+        f"✍️ Ответов получено: {answer_count}"
     )
 
 async def cmd_reset_poll(update, context):
@@ -608,7 +611,7 @@ async def handle_message(update, context):
     text = update.message.text
     update_stats(user_id, "messages")
 
-    # Обработка ответов на опрос
+    # ===== ОБРАБОТКА ОТВЕТОВ НА ОПРОС =====
     cursor.execute("SELECT * FROM poll_sent WHERE user_id = ?", (user_id,))
     has_poll_sent = cursor.fetchone() is not None
 
@@ -833,31 +836,31 @@ async def handle_message(update, context):
     await update.message.reply_text(answer)
 
 # ========== ЗАПУСК ==========
-async def main():
-    global application, loop
-    application = Application.builder().token(TOKEN).build()
-    loop = asyncio.get_event_loop()
+def main():
+    global application
+    app = Application.builder().token(TOKEN).build()
+    application = app
     
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("stats", cmd_stats))
-    application.add_handler(CommandHandler("quote", cmd_quote))
-    application.add_handler(CommandHandler("remind", cmd_remind))
-    application.add_handler(CommandHandler("my_reminders", cmd_my_reminders))
-    application.add_handler(CommandHandler("del_remind", cmd_del_remind))
-    application.add_handler(CommandHandler("dice", cmd_dice))
-    application.add_handler(CommandHandler("coin", cmd_coin))
-    application.add_handler(CommandHandler("quiz", cmd_quiz))
-    application.add_handler(CommandHandler("guess", cmd_guess))
-    application.add_handler(CommandHandler("news", cmd_news))
-    application.add_handler(CommandHandler("start_poll", cmd_start_poll))
-    application.add_handler(CommandHandler("check_users", cmd_check_users))
-    application.add_handler(CommandHandler("reset_poll", cmd_reset_poll))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("stats", cmd_stats))
+    app.add_handler(CommandHandler("quote", cmd_quote))
+    app.add_handler(CommandHandler("remind", cmd_remind))
+    app.add_handler(CommandHandler("my_reminders", cmd_my_reminders))
+    app.add_handler(CommandHandler("del_remind", cmd_del_remind))
+    app.add_handler(CommandHandler("dice", cmd_dice))
+    app.add_handler(CommandHandler("coin", cmd_coin))
+    app.add_handler(CommandHandler("quiz", cmd_quiz))
+    app.add_handler(CommandHandler("guess", cmd_guess))
+    app.add_handler(CommandHandler("news", cmd_news))
+    app.add_handler(CommandHandler("start_poll", cmd_start_poll))
+    app.add_handler(CommandHandler("check_users", cmd_check_users))
+    app.add_handler(CommandHandler("reset_poll", cmd_reset_poll))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     threading.Thread(target=run_scheduler, daemon=True).start()
     
-    print("✅ Бот запущен!")
-    await application.run_polling()
+    print("✅ Бот с опросом запущен!")
+    app.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
