@@ -271,10 +271,36 @@ async def generate_image(prompt):
     url = f"https://image.pollinations.ai/prompt/{enhanced.replace(' ', '%20')}?width=1024&height=1024&nologo=true&seed={seed}"
     return url
 
-# ========== ПОГОДА (БЕЗ ПОДСКАЗКИ) ==========
+# ========== ПОГОДА (С ПОДДЕРЖКОЙ СКЛОНЕНИЙ) ==========
+def extract_city_from_text(text):
+    """Извлекает название города из разных форм запроса"""
+    text = text.lower()
+    
+    # Убираем слово "погода"
+    text = text.replace("погода", "").strip()
+    
+    # Убираем предлоги "в", "во", "у", "на"
+    text = re.sub(r'^(в|во|у|на)\s+', '', text)
+    text = re.sub(r'\s+(в|во|у|на)\s+', ' ', text)
+    
+    # Убираем окончания склонений (Москве -> Москва)
+    text = re.sub(r'([а-я])е$', r'\1а', text)  # Москве -> Москва
+    text = re.sub(r'([а-я])у$', r'\1а', text)  # Москву -> Москва
+    text = re.sub(r'([а-я])ой$', r'\1а', text) # Москвой -> Москва
+    text = re.sub(r'([а-я])ей$', r'\1а', text) # Россией -> Россия
+    
+    # Убираем лишние пробелы
+    text = text.strip()
+    
+    return text
+
 async def get_weather(city):
     if not OPENWEATHER_KEY:
         return "🔌 Погода не настроена"
+    
+    # Извлекаем город из текста
+    city = extract_city_from_text(city)
+    
     url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={OPENWEATHER_KEY}&units=metric&lang=ru"
     try:
         async with aiohttp.ClientSession() as s:
@@ -558,7 +584,7 @@ async def start(update, context):
     await update.message.reply_text(
         "🤍 **Привет! Я марGO — твой умный помощник!**\n\n"
         "🎨 **Картинка** — нажми кнопку и опиши\n"
-        "🌤️ **Погода** — нажми кнопку и напиши город\n"
+        "🌤️ **Погода** — нажми кнопку и напиши город (или «погода в Москве»)\n"
         "🌍 **Переводчик** — нажми кнопку и напиши текст\n"
         "⏰ **Напомнить** — нажми кнопку и напиши «в 15:30» или «через 10 минут»\n"
         "📰 **Новости** — нажми кнопку и выбери страну\n"
@@ -656,7 +682,7 @@ async def handle_message(update, context):
         waiting_for_image[user_id] = True
         return
     if text == "🌤️ Погода":
-        await update.message.reply_text("🏙️ Напиши город")
+        await update.message.reply_text("🏙️ Напиши город (например: «Москва» или «погода в Москве»)")
         waiting_for_city[user_id] = True
         return
     if text == "🌍 Переводчик":
@@ -684,6 +710,17 @@ async def handle_message(update, context):
         )
         return
 
+    # ===== ПОГОДА (ЛЮБОЙ ФОРМАТ) =====
+    if "погода" in text.lower():
+        city_text = text.lower().replace("погода", "").strip()
+        city_text = re.sub(r'^(в|во|у|на)\s+', '', city_text)
+        if not city_text or city_text in ["в", "во", "у", "на"]:
+            await update.message.reply_text("🏙️ Напиши город. Например: «погода в Москве»")
+            return
+        weather = await get_weather(city_text)
+        await update.message.reply_text(weather)
+        return
+
     # ===== БЫСТРЫЕ КОМАНДЫ =====
     if text.lower().startswith("нарисуй"):
         prompt = text[7:].strip()
@@ -692,12 +729,6 @@ async def handle_message(update, context):
             img = await generate_image(prompt)
             await update.message.reply_photo(img, caption=prompt)
             update_stats(user_id, "images")
-        return
-
-    if text.lower().startswith("погода в"):
-        city = text[8:].strip()
-        weather = await get_weather(city)
-        await update.message.reply_text(weather)
         return
 
     # ===== ЕСТЕСТВЕННЫЕ НАПОМИНАНИЯ =====
