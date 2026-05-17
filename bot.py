@@ -48,9 +48,12 @@ async def fetch_news(country='us'):
 TOKEN = os.environ.get("BOT_TOKEN")
 GROQ_KEY = os.environ.get("GROQ_KEY")
 OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))
 
 if not TOKEN:
     raise ValueError("BOT_TOKEN не задан")
+if not ADMIN_ID:
+    print("⚠️ ADMIN_ID не задан, команды админа не будут работать")
 
 logging.basicConfig(level=logging.INFO)
 
@@ -88,6 +91,23 @@ cursor.execute('''
         role TEXT,
         content TEXT,
         created_at TIMESTAMP
+    )
+''')
+
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS poll_answers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        username TEXT,
+        answer TEXT,
+        created_at TIMESTAMP
+    )
+''')
+
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS poll_sent (
+        user_id INTEGER PRIMARY KEY,
+        sent_at TIMESTAMP
     )
 ''')
 conn.commit()
@@ -271,36 +291,22 @@ async def generate_image(prompt):
     url = f"https://image.pollinations.ai/prompt/{enhanced.replace(' ', '%20')}?width=1024&height=1024&nologo=true&seed={seed}"
     return url
 
-# ========== ПОГОДА (С ПОДДЕРЖКОЙ СКЛОНЕНИЙ) ==========
+# ========== ПОГОДА ==========
 def extract_city_from_text(text):
-    """Извлекает название города из разных форм запроса"""
     text = text.lower()
-    
-    # Убираем слово "погода"
     text = text.replace("погода", "").strip()
-    
-    # Убираем предлоги "в", "во", "у", "на"
     text = re.sub(r'^(в|во|у|на)\s+', '', text)
     text = re.sub(r'\s+(в|во|у|на)\s+', ' ', text)
-    
-    # Убираем окончания склонений (Москве -> Москва)
-    text = re.sub(r'([а-я])е$', r'\1а', text)  # Москве -> Москва
-    text = re.sub(r'([а-я])у$', r'\1а', text)  # Москву -> Москва
-    text = re.sub(r'([а-я])ой$', r'\1а', text) # Москвой -> Москва
-    text = re.sub(r'([а-я])ей$', r'\1а', text) # Россией -> Россия
-    
-    # Убираем лишние пробелы
-    text = text.strip()
-    
-    return text
+    text = re.sub(r'([а-я])е$', r'\1а', text)
+    text = re.sub(r'([а-я])у$', r'\1а', text)
+    text = re.sub(r'([а-я])ой$', r'\1а', text)
+    text = re.sub(r'([а-я])ей$', r'\1а', text)
+    return text.strip()
 
 async def get_weather(city):
     if not OPENWEATHER_KEY:
         return "🔌 Погода не настроена"
-    
-    # Извлекаем город из текста
     city = extract_city_from_text(city)
-    
     url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={OPENWEATHER_KEY}&units=metric&lang=ru"
     try:
         async with aiohttp.ClientSession() as s:
@@ -317,13 +323,7 @@ async def get_weather(city):
 # ========== ПЕРЕВОДЧИК ==========
 async def translate_text(text, target='ru'):
     url = "https://translate.googleapis.com/translate_a/single"
-    params = {
-        'client': 'gtx',
-        'sl': 'auto',
-        'tl': target,
-        'dt': 't',
-        'q': text
-    }
+    params = {'client': 'gtx', 'sl': 'auto', 'tl': target, 'dt': 't', 'q': text}
     try:
         async with aiohttp.ClientSession() as s:
             async with s.get(url, params=params, timeout=10) as r:
@@ -568,6 +568,70 @@ async def cmd_guess_answer(update, context):
     except ValueError:
         await update.message.reply_text("Введи число!")
 
+# ========== ОПРОС ==========
+async def send_poll_to_user(user_id, username):
+    questions = [
+        "🤍 **Опрос для улучшения марGO**\n\n"
+        "Ответь на вопросы (можно по одному, можно сразу):\n\n"
+        "1️⃣ Какой последний вопрос ты задавал нейросети и ответ тебя не устроил?\n\n"
+        "2️⃣ Что бесит тебя в голосовых помощниках (Алиса, Салют)?\n\n"
+        "3️⃣ Что бы ты хотел уметь делать с помощью нейросети, но пока не можешь?\n\n"
+        "4️⃣ Какую информацию ты НИКОГДА не передашь нейросети?\n\n"
+        "5️⃣ Если бы марGO могла делать одну вещь идеально, что бы это было?\n\n"
+        "Напиши ответ в одном сообщении (или частями). Спасибо! 🤍"
+    ]
+    
+    for q in questions:
+        try:
+            await application.bot.send_message(
+                chat_id=user_id,
+                text=q,
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            print(f"Не удалось отправить опрос пользователю {user_id}: {e}")
+
+async def send_poll_to_all():
+    cursor.execute("SELECT DISTINCT user_id FROM users")
+    users = cursor.fetchall()
+    
+    for (user_id,) in users:
+        cursor.execute("SELECT * FROM poll_sent WHERE user_id = ?", (user_id,))
+        if cursor.fetchone():
+            continue
+        
+        cursor.execute("SELECT name FROM users WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
+        username = row[0] if row else "пользователь"
+        
+        await send_poll_to_user(user_id, username)
+        
+        cursor.execute("INSERT INTO poll_sent (user_id, sent_at) VALUES (?, ?)", 
+                       (user_id, datetime.now()))
+        conn.commit()
+        
+        await asyncio.sleep(1)
+
+async def cmd_start_poll(update, context):
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("❌ У вас нет прав для этой команды.")
+        return
+    
+    await update.message.reply_text("📊 Запускаю опрос для всех пользователей...")
+    threading.Thread(target=lambda: asyncio.run(send_poll_to_all())).start()
+    await update.message.reply_text("✅ Опрос отправлен всем пользователям!")
+
+async def cmd_reset_poll(update, context):
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("❌ У вас нет прав для этой команды.")
+        return
+    
+    cursor.execute("DELETE FROM poll_sent")
+    conn.commit()
+    await update.message.reply_text("✅ История рассылки очищена. Теперь можно отправить опрос заново.")
+
 # ========== ОСНОВНЫЕ ОБРАБОТЧИКИ ==========
 waiting_for_image = {}
 waiting_for_city = {}
@@ -610,6 +674,25 @@ async def handle_message(update, context):
         waiting_for_translate[user_id] = False
     if user_id not in waiting_for_reminder:
         waiting_for_reminder[user_id] = False
+
+    # ===== ОБРАБОТКА ОТВЕТОВ НА ОПРОС =====
+    if user_id != ADMIN_ID:
+        cursor.execute("SELECT * FROM poll_answers WHERE user_id = ?", (user_id,))
+        if not cursor.fetchone():
+            cursor.execute("INSERT INTO poll_answers (user_id, username, answer, created_at) VALUES (?, ?, ?, ?)",
+                           (user_id, update.effective_user.username or "без username", text, datetime.now()))
+            conn.commit()
+            
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=f"📊 **Новый ответ на опрос!**\n\n"
+                     f"👤 @{update.effective_user.username or 'без username'}\n"
+                     f"🆔 {user_id}\n\n"
+                     f"📝 {text}"
+            )
+            
+            await update.message.reply_text("✅ Спасибо за ответ! Твоё мнение поможет улучшить марGO 🤍")
+            return
 
     # ===== ОТМЕНА =====
     if text.lower() == "отмена":
@@ -778,11 +861,13 @@ def main():
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("quote", cmd_quote))
     app.add_handler(CommandHandler("news", cmd_news))
+    app.add_handler(CommandHandler("start_poll", cmd_start_poll))
+    app.add_handler(CommandHandler("reset_poll", cmd_reset_poll))
     app.add_handler(MessageHandler(filters.Regex(r'^[1-4]$'), cmd_quiz_answer))
     app.add_handler(MessageHandler(filters.Regex(r'^\d+$'), cmd_guess_answer))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("✅ марGO со всеми функциями запущен!")
+    print("✅ марGO с опросом запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
