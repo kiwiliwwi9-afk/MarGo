@@ -537,6 +537,73 @@ async def cmd_start_poll(update, context):
     
     threading.Thread(target=run_poll).start()
 
+# ========== ИМПОРТ ПОЛЬЗОВАТЕЛЕЙ ==========
+async def cmd_import_users(update, context):
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("❌ Нет прав")
+        return
+    
+    # Собираем user_id из всех таблиц
+    tables = ['memory', 'reminders', 'poll_answers', 'poll_sent']
+    all_ids = set()
+    
+    for table in tables:
+        try:
+            cursor.execute(f"SELECT DISTINCT user_id FROM {table}")
+            for (uid,) in cursor.fetchall():
+                all_ids.add(uid)
+        except:
+            pass
+    
+    imported = 0
+    for uid in all_ids:
+        cursor.execute("SELECT * FROM users WHERE user_id = ?", (uid,))
+        if not cursor.fetchone():
+            cursor.execute('''
+                INSERT INTO users (user_id, name, created_at, last_active)
+                VALUES (?, ?, ?, ?)
+            ''', (uid, "пользователь", datetime.now(), datetime.now()))
+            imported += 1
+    
+    conn.commit()
+    
+    total = cursor.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    await update.message.reply_text(
+        f"✅ Импортировано {imported} пользователей!\n"
+        f"👥 Всего в БД: {total} пользователей.\n\n"
+        f"📨 Теперь запусти /start_poll для отправки опроса."
+    )
+
+async def cmd_force_poll(update, context):
+    """Очищает историю и отправляет опрос всем из memory"""
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("❌ Нет прав")
+        return
+    
+    # Сначала импортируем пользователей
+    cursor.execute("SELECT DISTINCT user_id FROM memory")
+    for (uid,) in cursor.fetchall():
+        cursor.execute("SELECT * FROM users WHERE user_id = ?", (uid,))
+        if not cursor.fetchone():
+            cursor.execute('''
+                INSERT INTO users (user_id, name, created_at, last_active)
+                VALUES (?, ?, ?, ?)
+            ''', (uid, "пользователь", datetime.now(), datetime.now()))
+    conn.commit()
+    
+    # Очищаем историю отправки
+    cursor.execute("DELETE FROM poll_sent")
+    conn.commit()
+    
+    total = cursor.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    await update.message.reply_text(
+        f"✅ Готово!\n"
+        f"👥 Пользователей в БД: {total}\n"
+        f"📨 Теперь запусти /start_poll"
+    )
+
 async def cmd_check_users(update, context):
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
@@ -552,9 +619,13 @@ async def cmd_check_users(update, context):
     cursor.execute("SELECT COUNT(*) FROM poll_answers")
     answer_count = cursor.fetchone()[0]
     
+    cursor.execute("SELECT COUNT(*) FROM memory")
+    memory_count = cursor.fetchone()[0]
+    
     await update.message.reply_text(
         f"📊 Статистика:\n"
-        f"👥 Пользователей в БД: {count}\n"
+        f"👥 Пользователей в БД users: {count}\n"
+        f"💾 Уникальных в memory: {memory_count}\n"
         f"📨 Опросов отправлено: {sent_count}\n"
         f"✍️ Ответов получено: {answer_count}"
     )
@@ -567,7 +638,7 @@ async def cmd_reset_poll(update, context):
     
     cursor.execute("DELETE FROM poll_sent")
     conn.commit()
-    await update.message.reply_text("✅ История рассылки очищена.")
+    await update.message.reply_text("✅ История рассылки очищена. Теперь можно отправить опрос заново.")
 
 # ========== ОСНОВНЫЕ ОБРАБОТЧИКИ ==========
 waiting_for_image = {}
@@ -855,6 +926,8 @@ def main():
     app.add_handler(CommandHandler("start_poll", cmd_start_poll))
     app.add_handler(CommandHandler("check_users", cmd_check_users))
     app.add_handler(CommandHandler("reset_poll", cmd_reset_poll))
+    app.add_handler(CommandHandler("import_users", cmd_import_users))
+    app.add_handler(CommandHandler("force_poll", cmd_force_poll))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     threading.Thread(target=run_scheduler, daemon=True).start()
