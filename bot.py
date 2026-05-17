@@ -5,9 +5,7 @@ import random
 import logging
 import threading
 import time
-import requests
 import sqlite3
-import json
 import re
 from datetime import datetime, timedelta
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
@@ -52,8 +50,6 @@ ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))
 
 if not TOKEN:
     raise ValueError("BOT_TOKEN не задан")
-if not ADMIN_ID:
-    print("⚠️ ADMIN_ID не задан, команды админа не будут работать")
 
 logging.basicConfig(level=logging.INFO)
 
@@ -193,6 +189,8 @@ def parse_reminder_time(text):
 
 # ========== ПЛАНИРОВЩИК НАПОМИНАНИЙ ==========
 reminder_running = False
+application = None
+loop = None
 
 def check_and_send_reminders():
     due_reminders = get_due_reminders()
@@ -440,58 +438,6 @@ async def cmd_del_remind(update, context):
     except ValueError:
         await update.message.reply_text("❌ ID должен быть числом", parse_mode="Markdown")
 
-async def process_natural_reminder(update, reminder_text, time_str):
-    try:
-        hour, minute = map(int, time_str.split(':'))
-        now = datetime.now()
-        remind_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if remind_time <= now:
-            remind_time += timedelta(days=1)
-        user_id = update.effective_user.id
-        reminder_id = add_reminder(user_id, reminder_text, remind_time)
-        time_str_full = remind_time.strftime("%d.%m.%Y в %H:%M")
-        await update.message.reply_text(
-            f"✅ **Напоминание создано!**\n\n"
-            f"📝 {reminder_text}\n"
-            f"⏰ {time_str_full}\n\n"
-            f"ID: {reminder_id}",
-            parse_mode="Markdown"
-        )
-    except:
-        await update.message.reply_text("❌ Неправильный формат времени")
-
-async def process_natural_reminder_minutes(update, reminder_text, minutes):
-    user_id = update.effective_user.id
-    remind_time = datetime.now() + timedelta(minutes=minutes)
-    reminder_id = add_reminder(user_id, reminder_text, remind_time)
-    time_str_full = remind_time.strftime("%d.%m.%Y в %H:%M")
-    await update.message.reply_text(
-        f"✅ **Напоминание создано!**\n\n"
-        f"📝 {reminder_text}\n"
-        f"⏰ Через {minutes} минут (в {time_str_full})\n\n"
-        f"ID: {reminder_id}",
-        parse_mode="Markdown"
-    )
-    update_stats(user_id, "reminders")
-
-async def process_natural_reminder_tomorrow(update, reminder_text, time_str):
-    try:
-        hour, minute = map(int, time_str.split(':'))
-        remind_time = datetime.now() + timedelta(days=1)
-        remind_time = remind_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        user_id = update.effective_user.id
-        reminder_id = add_reminder(user_id, reminder_text, remind_time)
-        time_str_full = remind_time.strftime("%d.%m.%Y в %H:%M")
-        await update.message.reply_text(
-            f"✅ **Напоминание создано!**\n\n"
-            f"📝 {reminder_text}\n"
-            f"⏰ {time_str_full}\n\n"
-            f"ID: {reminder_id}",
-            parse_mode="Markdown"
-        )
-    except:
-        await update.message.reply_text("❌ Неправильный формат времени")
-
 # ========== ИГРЫ ==========
 async def cmd_dice(update, context):
     user_id = update.effective_user.id
@@ -521,25 +467,6 @@ async def cmd_quiz(update, context):
     await update.message.reply_text(f"❓ {q['q']}\n\n{options}\n\nОтветь номером (1-{len(q['o'])})")
     update_stats(user_id, "games")
 
-async def cmd_quiz_answer(update, context):
-    user_id = update.effective_user.id
-    if user_id not in user_quiz:
-        return
-    try:
-        num = int(update.message.text)
-        q = user_quiz[user_id]
-        if 1 <= num <= len(q['options']):
-            user_answer = q['options'][num-1]
-            if user_answer == q['answer']:
-                await update.message.reply_text("✅ Правильно!")
-            else:
-                await update.message.reply_text(f"❌ Неправильно! Ответ: {q['answer']}")
-        else:
-            await update.message.reply_text(f"Введи число от 1 до {len(q['options'])}")
-    except:
-        await update.message.reply_text("Напиши номер ответа цифрой")
-    del user_quiz[user_id]
-
 user_number_game = {}
 
 async def cmd_guess(update, context):
@@ -549,27 +476,8 @@ async def cmd_guess(update, context):
     await update.message.reply_text("🔢 Я загадал число от 1 до 100. Попробуй угадать! Напиши число.")
     update_stats(user_id, "games")
 
-async def cmd_guess_answer(update, context):
-    user_id = update.effective_user.id
-    if user_id not in user_number_game:
-        return
-    try:
-        guess = int(update.message.text)
-        game = user_number_game[user_id]
-        game["attempts"] += 1
-        number = game["number"]
-        if guess < number:
-            await update.message.reply_text("📈 **Больше!** Попробуй ещё.")
-        elif guess > number:
-            await update.message.reply_text("📉 **Меньше!** Попробуй ещё.")
-        else:
-            await update.message.reply_text(f"🎉 **Поздравляю!** Ты угадал число {number} за {game['attempts']} попыток!")
-            del user_number_game[user_id]
-    except ValueError:
-        await update.message.reply_text("Введи число!")
-
 # ========== ОПРОС ==========
-async def send_poll_to_user(user_id, username):
+async def send_poll_to_user(user_id):
     questions = [
         "🤍 **Опрос для улучшения марGO**\n\n"
         "Ответь на вопросы (можно по одному, можно сразу):\n\n"
@@ -583,34 +491,35 @@ async def send_poll_to_user(user_id, username):
     
     for q in questions:
         try:
-            await application.bot.send_message(
-                chat_id=user_id,
-                text=q,
-                parse_mode="Markdown"
-            )
+            await application.bot.send_message(chat_id=user_id, text=q, parse_mode="Markdown")
+            await asyncio.sleep(0.5)
         except Exception as e:
-            print(f"Не удалось отправить опрос пользователю {user_id}: {e}")
+            print(f"Ошибка отправки опроса {user_id}: {e}")
+            return False
+    return True
 
 async def send_poll_to_all():
     cursor.execute("SELECT DISTINCT user_id FROM users")
     users = cursor.fetchall()
     
+    sent_count = 0
     for (user_id,) in users:
         cursor.execute("SELECT * FROM poll_sent WHERE user_id = ?", (user_id,))
         if cursor.fetchone():
             continue
         
-        cursor.execute("SELECT name FROM users WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
-        username = row[0] if row else "пользователь"
+        print(f"Отправляю опрос пользователю {user_id}...")
+        success = await send_poll_to_user(user_id)
         
-        await send_poll_to_user(user_id, username)
-        
-        cursor.execute("INSERT INTO poll_sent (user_id, sent_at) VALUES (?, ?)", 
-                       (user_id, datetime.now()))
-        conn.commit()
+        if success:
+            cursor.execute("INSERT INTO poll_sent (user_id, sent_at) VALUES (?, ?)", 
+                           (user_id, datetime.now()))
+            conn.commit()
+            sent_count += 1
         
         await asyncio.sleep(1)
+    
+    return sent_count
 
 async def cmd_start_poll(update, context):
     user_id = update.effective_user.id
@@ -619,8 +528,33 @@ async def cmd_start_poll(update, context):
         return
     
     await update.message.reply_text("📊 Запускаю опрос для всех пользователей...")
-    threading.Thread(target=lambda: asyncio.run(send_poll_to_all())).start()
-    await update.message.reply_text("✅ Опрос отправлен всем пользователям!")
+    
+    def run_poll():
+        sent = asyncio.run(send_poll_to_all())
+        asyncio.run_coroutine_threadsafe(
+            update.message.reply_text(f"✅ Опрос отправлен {sent} пользователям!"),
+            loop
+        )
+    
+    threading.Thread(target=run_poll).start()
+
+async def cmd_check_users(update, context):
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("❌ Нет прав")
+        return
+    
+    cursor.execute("SELECT COUNT(*) FROM users")
+    count = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM poll_sent")
+    sent_count = cursor.fetchone()[0]
+    
+    await update.message.reply_text(
+        f"📊 Статистика:\n"
+        f"👥 Пользователей в БД: {count}\n"
+        f"📨 Опросов отправлено: {sent_count}"
+    )
 
 async def cmd_reset_poll(update, context):
     user_id = update.effective_user.id
@@ -630,7 +564,7 @@ async def cmd_reset_poll(update, context):
     
     cursor.execute("DELETE FROM poll_sent")
     conn.commit()
-    await update.message.reply_text("✅ История рассылки очищена. Теперь можно отправить опрос заново.")
+    await update.message.reply_text("✅ История рассылки очищена.")
 
 # ========== ОСНОВНЫЕ ОБРАБОТЧИКИ ==========
 waiting_for_image = {}
@@ -641,7 +575,6 @@ waiting_for_reminder = {}
 async def start(update, context):
     user_id = update.effective_user.id
     
-    # Сохраняем пользователя в БД
     cursor.execute('''
         INSERT OR IGNORE INTO users (user_id, name, created_at, last_active)
         VALUES (?, ?, ?, ?)
@@ -657,14 +590,14 @@ async def start(update, context):
     await update.message.reply_text(
         "🤍 **Привет! Я марGO — твой умный помощник!**\n\n"
         "🎨 **Картинка** — нажми кнопку и опиши\n"
-        "🌤️ **Погода** — нажми кнопку и напиши город (или «погода в Москве»)\n"
+        "🌤️ **Погода** — нажми кнопку и напиши город\n"
         "🌍 **Переводчик** — нажми кнопку и напиши текст\n"
-        "⏰ **Напомнить** — нажми кнопку и напиши «в 15:30» или «через 10 минут»\n"
+        "⏰ **Напомнить** — нажми кнопку и напиши время\n"
         "📰 **Новости** — нажми кнопку и выбери страну\n"
         "🎮 **Игры** — /dice, /coin, /quiz, /guess\n"
         "💬 **Цитата** — мудрая фраза\n"
         "📊 **Профиль** — твоя статистика\n\n"
-        "❌ **Отмена** — выйти из режима картинки\n\n"
+        "❌ **Отмена** — выйти из режима\n\n"
         "Просто задавай вопросы — я отвечу!",
         parse_mode="Markdown",
         reply_markup=get_keyboard()
@@ -675,6 +608,31 @@ async def handle_message(update, context):
     text = update.message.text
     update_stats(user_id, "messages")
 
+    # Обработка ответов на опрос
+    cursor.execute("SELECT * FROM poll_sent WHERE user_id = ?", (user_id,))
+    has_poll_sent = cursor.fetchone() is not None
+
+    cursor.execute("SELECT * FROM poll_answers WHERE user_id = ?", (user_id,))
+    has_answered = cursor.fetchone() is not None
+
+    if has_poll_sent and not has_answered and user_id != ADMIN_ID:
+        cursor.execute('''
+            INSERT INTO poll_answers (user_id, username, answer, created_at)
+            VALUES (?, ?, ?, ?)
+        ''', (user_id, update.effective_user.username or "без username", text, datetime.now()))
+        conn.commit()
+        
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"📊 **Новый ответ на опрос!**\n\n"
+                 f"👤 @{update.effective_user.username or 'без username'}\n"
+                 f"🆔 {user_id}\n\n"
+                 f"📝 {text}"
+        )
+        
+        await update.message.reply_text("✅ Спасибо за ответ! Твоё мнение поможет улучшить марGO 🤍")
+        return
+
     if user_id not in waiting_for_image:
         waiting_for_image[user_id] = False
     if user_id not in waiting_for_city:
@@ -684,7 +642,7 @@ async def handle_message(update, context):
     if user_id not in waiting_for_reminder:
         waiting_for_reminder[user_id] = False
 
-    # ===== ОТМЕНА =====
+    # Отмена
     if text.lower() == "отмена":
         waiting_for_image[user_id] = False
         waiting_for_city[user_id] = False
@@ -693,172 +651,213 @@ async def handle_message(update, context):
         await update.message.reply_text("✅ Режим отменён.", reply_markup=get_keyboard())
         return
 
-    # ===== РЕЖИМ НАПОМИНАНИЯ =====
+    # Режим напоминания
     if waiting_for_reminder.get(user_id, False):
         await cmd_remind(update, context)
         waiting_for_reminder[user_id] = False
         return
 
-    # ===== РЕЖИМ ПЕРЕВОДА =====
+    # Режим перевода
     if waiting_for_translate.get(user_id, False):
         result = await translate_text(text, 'ru')
         if result:
             await update.message.reply_text(f"🌍 Перевод: {result}")
         else:
-            await update.message.reply_text("❌ Не удалось перевести. Попробуй позже.")
+            await update.message.reply_text("❌ Не удалось перевести.")
         waiting_for_translate[user_id] = False
         return
 
-    # ===== НОВОСТИ =====
+    # Новости
     if text == "📰 Новости":
         await update.message.reply_text("📰 **Выбери страну:**", reply_markup=get_news_keyboard())
         return
 
     if text in ["🌍 Главные", "🇷🇺 Россия", "🇺🇸 США", "🇬🇧 Великобритания", "🇫🇷 Франция", "🇩🇪 Германия", "🇯🇵 Япония", "🇨🇳 Китай"]:
         country_map = {
-            "🌍 Главные": "us",
-            "🇷🇺 Россия": "ru",
-            "🇺🇸 США": "us",
-            "🇬🇧 Великобритания": "uk",
-            "🇫🇷 Франция": "fr",
-            "🇩🇪 Германия": "de",
-            "🇯🇵 Япония": "jp",
-            "🇨🇳 Китай": "cn"
+            "🌍 Главные": 'us',
+            "🇷🇺 Россия": 'ru',
+            "🇺🇸 США": 'us',
+            "🇬🇧 Великобритания": 'uk',
+            "🇫🇷 Франция": 'fr',
+            "🇩🇪 Германия": 'de',
+            "🇯🇵 Япония": 'jp',
+            "🇨🇳 Китай": 'cn'
         }
-        await cmd_news(update, context, country_map[text])
-        await update.message.reply_text("Главное меню:", reply_markup=get_keyboard())
+        country_code = country_map.get(text, 'us')
+        await update.message.reply_text("📰 Загружаю новости...")
+        news = await fetch_news(country_code)
+        if news:
+            result = "📰 **Новости:**\n\n"
+            for i, item in enumerate(news, 1):
+                result += f"{i}. {item}\n"
+            await update.message.reply_text(result, parse_mode="Markdown", disable_web_page_preview=True)
+        else:
+            await update.message.reply_text("❌ Не удалось загрузить новости.")
+        await update.message.reply_text("🔙 Главное меню:", reply_markup=get_keyboard())
         return
 
     if text == "🔙 Назад":
-        await update.message.reply_text("Главное меню:", reply_markup=get_keyboard())
+        await update.message.reply_text("🔙 Главное меню:", reply_markup=get_keyboard())
         return
 
-    # ===== РЕЖИМ КАРТИНКИ =====
+    # Картинка
+    if text == "🎨 Картинка":
+        waiting_for_image[user_id] = True
+        await update.message.reply_text(
+            "🎨 **Опиши, что нарисовать:**\n\n❌ Отмена — напиши «отмена»",
+            parse_mode="Markdown",
+            reply_markup=get_image_keyboard()
+        )
+        return
+
     if waiting_for_image.get(user_id, False):
-        await update.message.reply_text("🎨 Рисую...")
-        img = await generate_image(text)
-        await update.message.reply_photo(img, caption=text)
+        await update.message.reply_text("🎨 Генерирую картинку...")
+        image_url = await generate_image(text)
+        await update.message.reply_photo(image_url, caption=f"🎨 {text[:100]}")
+        update_stats(user_id, "images")
         waiting_for_image[user_id] = False
-        await update.message.reply_text("Меню:", reply_markup=get_keyboard())
         return
 
-    # ===== РЕЖИМ ПОГОДЫ =====
+    # Погода
+    if text == "🌤️ Погода":
+        waiting_for_city[user_id] = True
+        await update.message.reply_text(
+            "🌤️ **Напиши название города:**\n\n❌ Отмена — напиши «отмена»",
+            parse_mode="Markdown",
+            reply_markup=get_image_keyboard()
+        )
+        return
+
     if waiting_for_city.get(user_id, False):
+        await update.message.reply_text("🌤️ Узнаю погоду...")
         weather = await get_weather(text)
         await update.message.reply_text(weather)
         waiting_for_city[user_id] = False
         return
 
-    # ===== КНОПКИ =====
-    if text == "🎨 Картинка":
-        await update.message.reply_text("🖌️ Опиши что нарисовать\n❌ «отмена» — выйти", reply_markup=get_image_keyboard())
-        waiting_for_image[user_id] = True
-        return
-    if text == "🌤️ Погода":
-        await update.message.reply_text("🏙️ Напиши город (например: «Москва» или «погода в Москве»)")
-        waiting_for_city[user_id] = True
-        return
+    # Погода в городе в любом сообщении
+    if "погода" in text.lower():
+        city_match = re.search(r'погода\s+в\s+([а-яА-ЯёЁa-zA-Z\s-]+)', text.lower())
+        if city_match:
+            city = city_match.group(1).strip()
+            weather = await get_weather(city)
+            await update.message.reply_text(weather)
+            return
+
+    # Переводчик
     if text == "🌍 Переводчик":
-        await update.message.reply_text("🌍 Напиши текст для перевода на русский")
         waiting_for_translate[user_id] = True
-        return
-    if text == "⏰ Напомнить":
-        await update.message.reply_text("⏰ Напиши в формате: `в 15:30` или `через 10 минут`", parse_mode="Markdown")
-        waiting_for_reminder[user_id] = True
-        return
-    if text == "🎮 Игры":
-        await update.message.reply_text("🎮 /dice — кубик\n/coin — монетка\n/quiz — викторина\n/guess — угадай число")
-        return
-    if text == "💬 Цитата":
-        await cmd_quote(update, context)
-        return
-    if text == "📊 Профиль":
-        await cmd_stats(update, context)
-        return
-    if text == "❓ Помощь":
         await update.message.reply_text(
-            "📋 **Команды:**\n"
-            "🎨 Картинка\n🌤️ Погода\n🌍 Переводчик\n⏰ Напомнить\n📰 Новости\n/dice, /coin, /quiz, /guess\n/my_reminders\n/del_remind 1\n\n❌ «отмена»",
+            "🌍 **Напиши текст для перевода на русский:**\n\n❌ Отмена — напиши «отмена»",
             parse_mode="Markdown"
         )
         return
 
-    # ===== ПОГОДА (ЛЮБОЙ ФОРМАТ) =====
-    if "погода" in text.lower():
-        city_text = text.lower().replace("погода", "").strip()
-        city_text = re.sub(r'^(в|во|у|на)\s+', '', city_text)
-        if not city_text or city_text in ["в", "во", "у", "на"]:
-            await update.message.reply_text("🏙️ Напиши город. Например: «погода в Москве»")
-            return
-        weather = await get_weather(city_text)
-        await update.message.reply_text(weather)
+    # Напомнить
+    if text == "⏰ Напомнить":
+        waiting_for_reminder[user_id] = True
+        await update.message.reply_text(
+            "⏰ **Когда напомнить?**\n\n"
+            "• `в 15:30` — сегодня\n"
+            "• `завтра в 10:00`\n"
+            "• `через 10 минут`\n\n"
+            "Напиши время и что напомнить",
+            parse_mode="Markdown"
+        )
         return
 
-    # ===== БЫСТРЫЕ КОМАНДЫ =====
-    if text.lower().startswith("нарисуй"):
-        prompt = text[7:].strip()
-        if prompt:
-            await update.message.reply_text("🎨 Рисую...")
-            img = await generate_image(prompt)
-            await update.message.reply_photo(img, caption=prompt)
-            update_stats(user_id, "images")
+    # Игры
+    if text == "🎮 Игры":
+        await update.message.reply_text(
+            "🎮 **Доступные игры:**\n\n"
+            "/dice — бросить кубик\n"
+            "/coin — монетка\n"
+            "/quiz — викторина\n"
+            "/guess — угадай число",
+            parse_mode="Markdown"
+        )
         return
 
-    # ===== ЕСТЕСТВЕННЫЕ НАПОМИНАНИЯ =====
-    remind_match = re.search(r'напомни мне\s+(.+?)\s+в\s+(\d{1,2}:\d{2})', text.lower())
-    if remind_match:
-        await process_natural_reminder(update, remind_match.group(1), remind_match.group(2))
+    if text == "💬 Цитата":
+        await cmd_quote(update, context)
         return
 
-    remind_minutes_match = re.search(r'напомни\s+(.+?)\s+через\s+(\d+)\s*(?:минут|минуты|минуту|час|часа|часов)', text.lower())
-    if remind_minutes_match:
-        minutes = int(remind_minutes_match.group(2))
-        await process_natural_reminder_minutes(update, remind_minutes_match.group(1), minutes)
+    if text == "📊 Профиль":
+        await cmd_stats(update, context)
         return
 
-    tomorrow_match = re.search(r'напомнить\s+(.+?)\s+завтра\s+в\s+(\d{1,2}:\d{2})', text.lower())
-    if tomorrow_match:
-        await process_natural_reminder_tomorrow(update, tomorrow_match.group(1), tomorrow_match.group(2))
+    if text == "❓ Помощь":
+        await start(update, context)
         return
 
-    # ===== ОБЫЧНЫЙ ВОПРОС =====
-    await update.message.reply_text("💭 Думаю...")
+    # Обработка ответов на игры
+    if user_id in user_quiz:
+        try:
+            num = int(text)
+            q = user_quiz[user_id]
+            if 1 <= num <= len(q['options']):
+                user_answer = q['options'][num-1]
+                if user_answer == q['answer']:
+                    await update.message.reply_text("✅ Правильно!")
+                else:
+                    await update.message.reply_text(f"❌ Неправильно! Ответ: {q['answer']}")
+            else:
+                await update.message.reply_text(f"Введи число от 1 до {len(q['options'])}")
+        except:
+            await update.message.reply_text("Напиши номер ответа цифрой")
+        del user_quiz[user_id]
+        return
+
+    if user_id in user_number_game:
+        try:
+            guess = int(text)
+            game = user_number_game[user_id]
+            game["attempts"] += 1
+            number = game["number"]
+            if guess < number:
+                await update.message.reply_text("📈 **Больше!**")
+            elif guess > number:
+                await update.message.reply_text("📉 **Меньше!**")
+            else:
+                await update.message.reply_text(f"🎉 Поздравляю! Число {number} за {game['attempts']} попыток!")
+                del user_number_game[user_id]
+        except:
+            await update.message.reply_text("Введи число!")
+        return
+
+    # Обычный диалог с Groq
     save_memory(user_id, "user", text)
+    await update.message.reply_text("🤔 Думаю...")
     answer = await ask_groq_with_memory(user_id, text)
     save_memory(user_id, "assistant", answer)
     await update.message.reply_text(answer)
 
 # ========== ЗАПУСК ==========
-global application, loop
-
-def main():
+async def main():
     global application, loop
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
+    application = Application.builder().token(TOKEN).build()
+    loop = asyncio.get_event_loop()
+    
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("stats", cmd_stats))
+    application.add_handler(CommandHandler("quote", cmd_quote))
+    application.add_handler(CommandHandler("remind", cmd_remind))
+    application.add_handler(CommandHandler("my_reminders", cmd_my_reminders))
+    application.add_handler(CommandHandler("del_remind", cmd_del_remind))
+    application.add_handler(CommandHandler("dice", cmd_dice))
+    application.add_handler(CommandHandler("coin", cmd_coin))
+    application.add_handler(CommandHandler("quiz", cmd_quiz))
+    application.add_handler(CommandHandler("guess", cmd_guess))
+    application.add_handler(CommandHandler("news", cmd_news))
+    application.add_handler(CommandHandler("start_poll", cmd_start_poll))
+    application.add_handler(CommandHandler("check_users", cmd_check_users))
+    application.add_handler(CommandHandler("reset_poll", cmd_reset_poll))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
     threading.Thread(target=run_scheduler, daemon=True).start()
-
-    app = Application.builder().token(TOKEN).build()
-    application = app
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("remind", cmd_remind))
-    app.add_handler(CommandHandler("my_reminders", cmd_my_reminders))
-    app.add_handler(CommandHandler("del_remind", cmd_del_remind))
-    app.add_handler(CommandHandler("dice", cmd_dice))
-    app.add_handler(CommandHandler("coin", cmd_coin))
-    app.add_handler(CommandHandler("quiz", cmd_quiz))
-    app.add_handler(CommandHandler("guess", cmd_guess))
-    app.add_handler(CommandHandler("stats", cmd_stats))
-    app.add_handler(CommandHandler("quote", cmd_quote))
-    app.add_handler(CommandHandler("news", cmd_news))
-    app.add_handler(CommandHandler("start_poll", cmd_start_poll))
-    app.add_handler(CommandHandler("reset_poll", cmd_reset_poll))
-    app.add_handler(MessageHandler(filters.Regex(r'^[1-4]$'), cmd_quiz_answer))
-    app.add_handler(MessageHandler(filters.Regex(r'^\d+$'), cmd_guess_answer))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    print("✅ марGO с опросом запущен!")
-    app.run_polling()
+    
+    print("✅ Бот запущен!")
+    await application.run_polling()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
