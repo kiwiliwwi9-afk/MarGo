@@ -491,34 +491,11 @@ async def send_poll_to_user(user_id):
     for q in questions:
         try:
             await application.bot.send_message(chat_id=user_id, text=q, parse_mode="Markdown")
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.3)
         except Exception as e:
             print(f"Ошибка отправки опроса {user_id}: {e}")
             return False
     return True
-
-async def send_poll_to_all():
-    cursor.execute("SELECT DISTINCT user_id FROM users")
-    users = cursor.fetchall()
-    
-    sent_count = 0
-    for (user_id,) in users:
-        cursor.execute("SELECT * FROM poll_sent WHERE user_id = ?", (user_id,))
-        if cursor.fetchone():
-            continue
-        
-        print(f"Отправляю опрос пользователю {user_id}...")
-        success = await send_poll_to_user(user_id)
-        
-        if success:
-            cursor.execute("INSERT INTO poll_sent (user_id, sent_at) VALUES (?, ?)", 
-                           (user_id, datetime.now()))
-            conn.commit()
-            sent_count += 1
-        
-        await asyncio.sleep(1)
-    
-    return sent_count
 
 async def cmd_start_poll(update, context):
     user_id = update.effective_user.id
@@ -526,35 +503,73 @@ async def cmd_start_poll(update, context):
         await update.message.reply_text("❌ У вас нет прав для этой команды.")
         return
     
-    await update.message.reply_text("📊 Запускаю опрос для всех пользователей...")
+    # Получаем всех пользователей из БД
+    cursor.execute("SELECT DISTINCT user_id FROM users")
+    users = cursor.fetchall()
     
-    def run_poll():
-        sent = asyncio.run(send_poll_to_all())
-        asyncio.run_coroutine_threadsafe(
-            update.message.reply_text(f"✅ Опрос отправлен {sent} пользователям!"),
-            asyncio.get_event_loop()
-        )
+    if not users:
+        await update.message.reply_text("❌ Нет пользователей в базе. Сначала запусти /force_poll")
+        return
     
-    threading.Thread(target=run_poll).start()
+    await update.message.reply_text(f"📊 Начинаю рассылку опроса {len(users)} пользователям...\n\n⏱️ Это может занять несколько минут.")
+    
+    sent = 0
+    failed = 0
+    total = 0
+    
+    for (uid,) in users:
+        # Пропускаем админа
+        if uid == ADMIN_ID:
+            continue
+        
+        total += 1
+        
+        # Проверяем, отправляли ли уже опрос этому пользователю
+        cursor.execute("SELECT * FROM poll_sent WHERE user_id = ?", (uid,))
+        if cursor.fetchone():
+            continue
+        
+        try:
+            await send_poll_to_user(uid)
+            cursor.execute("INSERT INTO poll_sent (user_id, sent_at) VALUES (?, ?)", 
+                           (uid, datetime.now()))
+            conn.commit()
+            sent += 1
+            print(f"✅ Опрос отправлен {uid}")
+        except Exception as e:
+            failed += 1
+            print(f"❌ Ошибка отправки {uid}: {e}")
+        
+        # Пауза чтобы не забанили
+        await asyncio.sleep(0.5)
+    
+    await update.message.reply_text(
+        f"✅ Рассылка завершена!\n\n"
+        f"📨 Отправлено: {sent}\n"
+        f"❌ Ошибок: {failed}\n"
+        f"👥 Всего пользователей: {total}"
+    )
 
-# ========== ИМПОРТ ПОЛЬЗОВАТЕЛЕЙ ==========
-async def cmd_import_users(update, context):
+async def cmd_force_poll(update, context):
+    """Импортирует всех пользователей из memory и очищает историю"""
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
         await update.message.reply_text("❌ Нет прав")
         return
     
-    # Собираем user_id из всех таблиц
-    tables = ['memory', 'reminders', 'poll_answers', 'poll_sent']
-    all_ids = set()
+    # Собираем user_id из таблицы memory
+    cursor.execute("SELECT DISTINCT user_id FROM memory")
+    memory_users = cursor.fetchall()
     
-    for table in tables:
-        try:
-            cursor.execute(f"SELECT DISTINCT user_id FROM {table}")
-            for (uid,) in cursor.fetchall():
-                all_ids.add(uid)
-        except:
-            pass
+    # Также из reminders
+    cursor.execute("SELECT DISTINCT user_id FROM reminders")
+    reminder_users = cursor.fetchall()
+    
+    all_ids = set()
+    for (uid,) in memory_users:
+        all_ids.add(uid)
+    for (uid,) in reminder_users:
+        all_ids.add(uid)
     
     imported = 0
     for uid in all_ids:
@@ -568,40 +583,16 @@ async def cmd_import_users(update, context):
     
     conn.commit()
     
-    total = cursor.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-    await update.message.reply_text(
-        f"✅ Импортировано {imported} пользователей!\n"
-        f"👥 Всего в БД: {total} пользователей.\n\n"
-        f"📨 Теперь запусти /start_poll для отправки опроса."
-    )
-
-async def cmd_force_poll(update, context):
-    """Очищает историю и отправляет опрос всем из memory"""
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        await update.message.reply_text("❌ Нет прав")
-        return
-    
-    # Сначала импортируем пользователей
-    cursor.execute("SELECT DISTINCT user_id FROM memory")
-    for (uid,) in cursor.fetchall():
-        cursor.execute("SELECT * FROM users WHERE user_id = ?", (uid,))
-        if not cursor.fetchone():
-            cursor.execute('''
-                INSERT INTO users (user_id, name, created_at, last_active)
-                VALUES (?, ?, ?, ?)
-            ''', (uid, "пользователь", datetime.now(), datetime.now()))
-    conn.commit()
-    
-    # Очищаем историю отправки
+    # Очищаем историю отправки опросов
     cursor.execute("DELETE FROM poll_sent")
     conn.commit()
     
     total = cursor.execute("SELECT COUNT(*) FROM users").fetchone()[0]
     await update.message.reply_text(
         f"✅ Готово!\n"
-        f"👥 Пользователей в БД: {total}\n"
-        f"📨 Теперь запусти /start_poll"
+        f"➕ Импортировано: {imported}\n"
+        f"👥 Всего в БД: {total}\n\n"
+        f"📨 Теперь запусти /start_poll для отправки опроса."
     )
 
 async def cmd_check_users(update, context):
@@ -926,7 +917,6 @@ def main():
     app.add_handler(CommandHandler("start_poll", cmd_start_poll))
     app.add_handler(CommandHandler("check_users", cmd_check_users))
     app.add_handler(CommandHandler("reset_poll", cmd_reset_poll))
-    app.add_handler(CommandHandler("import_users", cmd_import_users))
     app.add_handler(CommandHandler("force_poll", cmd_force_poll))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
