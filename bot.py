@@ -273,12 +273,42 @@ async def ask_groq_with_memory(user_id, prompt):
     context = ""
     for role, content in history[-6:]:
         context += f"{role}: {content}\n"
-    full_prompt = f"""Ты — марGO, живой умный помощник. Отвечай на русском. Учитывай историю разговора.
+    
+    # Определяем запрошенный язык
+    language_map = {
+        'английском': 'English', 'английский': 'English', 'english': 'English', 'по-английски': 'English',
+        'итальянском': 'Italian', 'итальянский': 'Italian', 'italian': 'Italian', 'по-итальянски': 'Italian',
+        'китайском': 'Chinese', 'китайский': 'Chinese', 'chinese': 'Chinese', 'по-китайски': 'Chinese',
+        'французском': 'French', 'французский': 'French', 'french': 'French', 'по-французски': 'French',
+        'немецком': 'German', 'немецкий': 'German', 'german': 'German', 'по-немецки': 'German',
+        'испанском': 'Spanish', 'испанский': 'Spanish', 'spanish': 'Spanish', 'по-испански': 'Spanish',
+        'японском': 'Japanese', 'японский': 'Japanese', 'japanese': 'Japanese', 'по-японски': 'Japanese',
+        'корейском': 'Korean', 'корейский': 'Korean', 'korean': 'Korean', 'по-корейски': 'Korean'
+    }
+    
+    target_language = None
+    prompt_lower = prompt.lower()
+    for lang_key, lang_value in language_map.items():
+        if lang_key in prompt_lower:
+            target_language = lang_value
+            # Убираем команду языка из промпта
+            prompt = re.sub(r'(напиши на |по-)?' + re.escape(lang_key) + r'( языке)?', '', prompt_lower).strip()
+            if not prompt:
+                prompt = f"Say hello in {target_language}"
+            break
+    
+    if target_language:
+        language_instruction = f"Answer in {target_language} only. Do not use Russian or any other language. Your entire response must be in {target_language}."
+    else:
+        language_instruction = "Answer in Russian."
+    
+    full_prompt = f"""You are марGO, a smart assistant. {language_instruction}
 
-История:
+History:
 {context}
-Пользователь: {prompt}
+User: {prompt}
 марGO:"""
+    
     return await ask_groq(full_prompt)
 
 # ========== КАРТИНКИ ==========
@@ -503,7 +533,6 @@ async def cmd_start_poll(update, context):
         await update.message.reply_text("❌ У вас нет прав для этой команды.")
         return
     
-    # Получаем всех пользователей из БД
     cursor.execute("SELECT DISTINCT user_id FROM users")
     users = cursor.fetchall()
     
@@ -518,13 +547,11 @@ async def cmd_start_poll(update, context):
     total = 0
     
     for (uid,) in users:
-        # Пропускаем админа
         if uid == ADMIN_ID:
             continue
         
         total += 1
         
-        # Проверяем, отправляли ли уже опрос этому пользователю
         cursor.execute("SELECT * FROM poll_sent WHERE user_id = ?", (uid,))
         if cursor.fetchone():
             continue
@@ -540,7 +567,6 @@ async def cmd_start_poll(update, context):
             failed += 1
             print(f"❌ Ошибка отправки {uid}: {e}")
         
-        # Пауза чтобы не забанили
         await asyncio.sleep(0.5)
     
     await update.message.reply_text(
@@ -551,17 +577,14 @@ async def cmd_start_poll(update, context):
     )
 
 async def cmd_force_poll(update, context):
-    """Импортирует всех пользователей из memory и очищает историю"""
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
         await update.message.reply_text("❌ Нет прав")
         return
     
-    # Собираем user_id из таблицы memory
     cursor.execute("SELECT DISTINCT user_id FROM memory")
     memory_users = cursor.fetchall()
     
-    # Также из reminders
     cursor.execute("SELECT DISTINCT user_id FROM reminders")
     reminder_users = cursor.fetchall()
     
@@ -583,7 +606,6 @@ async def cmd_force_poll(update, context):
     
     conn.commit()
     
-    # Очищаем историю отправки опросов
     cursor.execute("DELETE FROM poll_sent")
     conn.commit()
     
@@ -663,6 +685,7 @@ async def start(update, context):
         "💬 **Цитата** — мудрая фраза\n"
         "📊 **Профиль** — твоя статистика\n\n"
         "❌ **Отмена** — выйти из режима\n\n"
+        "🌐 **Смена языка** — напиши «напиши на английском ...»\n\n"
         "Просто задавай вопросы — я отвечу!",
         parse_mode="Markdown",
         reply_markup=get_keyboard()
@@ -890,7 +913,7 @@ async def handle_message(update, context):
             await update.message.reply_text("Введи число!")
         return
 
-    # Обычный диалог с Groq
+    # ===== ОБЫЧНЫЙ ДИАЛОГ С ПОДДЕРЖКОЙ ЯЗЫКОВ =====
     save_memory(user_id, "user", text)
     await update.message.reply_text("🤔 Думаю...")
     answer = await ask_groq_with_memory(user_id, text)
@@ -922,7 +945,7 @@ def main():
     
     threading.Thread(target=run_scheduler, daemon=True).start()
     
-    print("✅ Бот с опросом запущен!")
+    print("✅ Бот с опросом и поддержкой языков запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
