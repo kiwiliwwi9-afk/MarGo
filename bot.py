@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import xml.etree.ElementTree as ET
+import google.generativeai as genai
 
 # ========== RSS ДЛЯ НОВОСТЕЙ ==========
 NEWS_RSS = {
@@ -44,12 +45,19 @@ async def fetch_news(country='us'):
 
 # ========== НАСТРОЙКИ ==========
 TOKEN = os.environ.get("BOT_TOKEN")
-GROQ_KEY = os.environ.get("GROQ_KEY")
+GEMINI_KEY = os.environ.get("GEMINI_KEY")  # Заменили GROQ_KEY на GEMINI_KEY
 OPENWEATHER_KEY = os.environ.get("OPENWEATHER_KEY")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))
 
 if not TOKEN:
     raise ValueError("BOT_TOKEN не задан")
+
+# Настройка Gemini
+if GEMINI_KEY:
+    genai.configure(api_key=GEMINI_KEY)
+    print("✅ Gemini настроен")
+else:
+    print("⚠️ GEMINI_KEY не задан, Марго будет работать без ИИ")
 
 logging.basicConfig(level=logging.INFO)
 
@@ -246,29 +254,21 @@ def get_news_keyboard():
     ]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
-# ========== GROQ ==========
-async def ask_groq(prompt):
-    if not GROQ_KEY:
-        return "🔌 Groq не настроен"
-    url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"}
-    payload = {
-        "model": "llama-3.3-70b-versatile",
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 500,
-        "temperature": 0.8
-    }
+# ========== GEMINI (НОВЫЙ УМНЫЙ ДВИЖОК) ==========
+async def ask_gemini(prompt):
+    if not GEMINI_KEY:
+        return "🔌 Gemini не настроен. Добавь GEMINI_KEY в переменные окружения."
+    
     try:
-        async with aiohttp.ClientSession() as s:
-            async with s.post(url, headers=headers, json=payload, timeout=15) as r:
-                if r.status == 200:
-                    data = await r.json()
-                    return data['choices'][0]['message']['content']
-                return f"❌ Ошибка: {r.status}"
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        # Запускаем в отдельном потоке, чтобы не блокировать
+        response = await asyncio.to_thread(model.generate_content, prompt)
+        return response.text
     except Exception as e:
-        return f"❌ Ошибка: {str(e)}"
+        print(f"Gemini ошибка: {e}")
+        return f"❌ Ошибка Gemini: {str(e)}"
 
-async def ask_groq_with_memory(user_id, prompt):
+async def ask_gemini_with_memory(user_id, prompt):
     history = get_memory(user_id)
     context = ""
     for role, content in history[-6:]:
@@ -291,7 +291,6 @@ async def ask_groq_with_memory(user_id, prompt):
     for lang_key, lang_value in language_map.items():
         if lang_key in prompt_lower:
             target_language = lang_value
-            # Убираем команду языка из промпта
             prompt = re.sub(r'(напиши на |по-)?' + re.escape(lang_key) + r'( языке)?', '', prompt_lower).strip()
             if not prompt:
                 prompt = f"Say hello in {target_language}"
@@ -304,14 +303,15 @@ async def ask_groq_with_memory(user_id, prompt):
     
     full_prompt = f"""You are марGO, a smart assistant. {language_instruction}
 
-History:
+Recent conversation history:
 {context}
+
 User: {prompt}
 марGO:"""
     
-    return await ask_groq(full_prompt)
+    return await ask_gemini(full_prompt)
 
-# ========== КАРТИНКИ ==========
+# ========== КАРТИНКИ (оставляем как было) ==========
 async def generate_image(prompt):
     enhanced = f"masterpiece, best quality, highly detailed, {prompt}"
     seed = random.randint(1, 999999)
@@ -411,7 +411,8 @@ async def cmd_quote(update, context):
         "🚀 Лучший способ предсказать будущее — создать его самому.",
         "🤍 Простота — высшая сложность.",
         "🌍 GO World — твой мир. Твои правила.",
-        "🎨 марGO рисует, отвечает, напоминает — всё в одном!"
+        "🎨 марGO рисует, отвечает, напоминает — всё в одном!",
+        "🧠 Теперь я на Gemini — как ChatGPT, только бесплатно!"
     ]
     await update.message.reply_text(random.choice(quotes))
 
@@ -676,6 +677,7 @@ async def start(update, context):
     
     await update.message.reply_text(
         "🤍 **Привет! Я марGO — твой умный помощник!**\n\n"
+        "🧠 **Теперь я на Google Gemini** — почти как ChatGPT, только бесплатно!\n\n"
         "🎨 **Картинка** — нажми кнопку и опиши\n"
         "🌤️ **Погода** — нажми кнопку и напиши город\n"
         "🌍 **Переводчик** — нажми кнопку и напиши текст\n"
@@ -684,8 +686,8 @@ async def start(update, context):
         "🎮 **Игры** — /dice, /coin, /quiz, /guess\n"
         "💬 **Цитата** — мудрая фраза\n"
         "📊 **Профиль** — твоя статистика\n\n"
-        "❌ **Отмена** — выйти из режима\n\n"
         "🌐 **Смена языка** — напиши «напиши на английском ...»\n\n"
+        "❌ **Отмена** — выйти из режима\n\n"
         "Просто задавай вопросы — я отвечу!",
         parse_mode="Markdown",
         reply_markup=get_keyboard()
@@ -913,10 +915,10 @@ async def handle_message(update, context):
             await update.message.reply_text("Введи число!")
         return
 
-    # ===== ОБЫЧНЫЙ ДИАЛОГ С ПОДДЕРЖКОЙ ЯЗЫКОВ =====
+    # ===== ОБЫЧНЫЙ ДИАЛОГ С GEMINI (НОВЫЙ УМНЫЙ ДВИЖОК) =====
     save_memory(user_id, "user", text)
-    await update.message.reply_text("🤔 Думаю...")
-    answer = await ask_groq_with_memory(user_id, text)
+    await update.message.reply_text("🧠 Думаю (Gemini)...")
+    answer = await ask_gemini_with_memory(user_id, text)
     save_memory(user_id, "assistant", answer)
     await update.message.reply_text(answer)
 
@@ -945,7 +947,7 @@ def main():
     
     threading.Thread(target=run_scheduler, daemon=True).start()
     
-    print("✅ Бот с опросом и поддержкой языков запущен!")
+    print("✅ МарGO с Gemini (умный движок) запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
